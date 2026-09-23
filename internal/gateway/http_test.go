@@ -117,4 +117,8 @@ func TestLargeJWTOverHTTP(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatal("configured large JWT", resp.StatusCode)
 	}
+	out, err := gitRun(f.root, token, "ls-remote", f.url)
+	if err != nil || !strings.Contains(out, "refs/heads/main") || strings.Contains(out, "secret") {
+		t.Fatal("real Git large JWT", err, out)
+	}
 }

@@ -1,6 +1,6 @@
 # JWT permission syntax, version 1
 
-Status: proposal. This defines the compact permission strings used by the [Git gateway design](git-proxy-design.md). Permissions are signed inside the JWT and evaluated locally; no permission-name or role lookup is required.
+Status: implemented version 1. This defines the compact permission strings used by the [Git gateway design](git-proxy-design.md). Permissions are signed inside the JWT and evaluated locally; no permission-name or role lookup is required.
 
 ## Shape
 

@@ -5,3 +5,5 @@
 *.pem
 *.jwt
 .DS_Store
+/.shai/
+/coverage.out

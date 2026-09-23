@@ -1,6 +1,6 @@
 # Git permission gateway: initial requirements and design
 
-Status: proposal, 2026-09-23. Implementation language: Go. Initial upstream: GitHub organizations; other Git forges follow through adapters.
+Status: initial implementation available, 2026-09-23; this document also records longer-term design requirements. See [README](../README.md) for implemented scope, configuration and tests. Implementation language: Go. Initial upstream: GitHub organizations; other Git forges follow through adapters.
 
 Build an HTTPS endpoint that agents use as their Git remote. The gateway authenticates each agent, applies repository and ref permissions, and forwards permitted operations using credentials held by the gateway. It also creates missing repositories when a separate creation grant permits it. GitHub remains the source of truth for objects and refs.
 
@@ -302,6 +302,6 @@ Use a local real Git HTTP backend for protocol integration tests and a disposabl
 3. Add durable provisioning, credential rotation, audit/revocation, resource limits, and GitHub end-to-end tests.
 4. Add another forge only after its adapter passes the same contract and explicitly documents differing capabilities.
 
-Read scope is settled: branch-scoped ref retrieval with repository-authorized hash reads. Protocol scope is v2-only upload-pack plus the receive-pack protocol required by standard Git pushes. Agent authentication uses signed JWT permissions as HTTPS passwords without per-agent lookups. Upstream authentication defaults to shared, operator-provided tokens; no App is required. Decisions still needed: whether force updates on granted agent branches are acceptable; whether dry-run/abandoned discovery may create empty repos; orchestrator signing/renewal integration and deployment token-size/lifetime budgets; forge account/owner mappings and token permissions; default-branch/bootstrap behavior; required LFS/submodule workflows; and expected repository sizes and concurrency.
+Read scope is settled: branch-scoped ref retrieval with repository-authorized hash reads. Protocol scope is v2-only upload-pack plus the receive-pack protocol required by standard Git pushes. Agent authentication uses signed JWT permissions as HTTPS passwords without per-agent lookups. Upstream authentication defaults to shared, operator-provided tokens; no App is required. The implementation allows force updates under `w`, permits dry-run/abandoned discovery to create empty repositories, and leaves repositories uninitialized until an authorized push. Deployment choices remain: orchestrator signing/renewal integration and token-size/lifetime budgets; forge account/owner mappings and token permissions; and expected repository sizes and concurrency. LFS remains outside the initial scope.
 
-This draft specifies behavior and implementation boundaries. It does not implement or validate a running gateway.
+The Go implementation and automated tests are in this repository. The initial server uses a single-instance bbolt store; distributed state, audit retention and metrics export remain follow-up work. Live forge account permissions require deployment-specific validation. See [README](../README.md) for the exact compatibility boundaries.

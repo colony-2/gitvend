@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "permissions": [
+    "github.com/fooorg/project#main:r",
+    "github.com/fooorg/project#agents/47/*:rw",
+    "github.com/fooorg/agent-47-*:c",
+    "github.com/fooorg/agent-47-*#agents/47/*:rw"
+  ]
+}
