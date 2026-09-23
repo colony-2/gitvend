@@ -1,0 +1,65 @@
+package auth
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"gitgate/internal/policy"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestJWT(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	v := Verifier{Audience: "gitgate", Keys: map[string]Key{"one": {Issuer: "issuer", Public: pub, Owners: map[string][]string{"github.com": {"org"}}}}, MaxBytes: 4096, MaxLifetime: 15 * time.Minute, Leeway: 30 * time.Second}
+	c := NewClaims("issuer", "agent", "gitgate", time.Minute, Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}})
+	raw, e := Sign(c, priv, "one", 4096)
+	if e != nil {
+		t.Fatal(e)
+	}
+	id, e := v.Verify(raw)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !id.Access(policy.Repository{Host: "github.com", Path: "org/r"}) || id.Access(policy.Repository{Host: "github.com", Path: "other/r"}) {
+		t.Fatal("key ceiling")
+	}
+	parts := strings.Split(raw, ".")
+	body, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	parts[1] = base64.RawURLEncoding.EncodeToString([]byte(strings.Replace(string(body), ":r", ":rw", 1)))
+	if _, e = v.Verify(strings.Join(parts, ".")); e == nil {
+		t.Fatal("tampering accepted")
+	}
+	for _, kind := range []string{"issuer", "audience", "lifetime", "expired", "version"} {
+		bad := *c
+		switch kind {
+		case "issuer":
+			bad.Issuer = "other"
+		case "audience":
+			bad.Audience = []string{"else"}
+		case "lifetime":
+			bad.ExpiresAt = NewClaims("i", "s", "a", time.Hour, Grant{}).ExpiresAt
+		case "expired":
+			v.Now = func() time.Time { return time.Now().Add(time.Hour) }
+		case "version":
+			bad.Grant.Version = 2
+		}
+		s, _ := Sign(&bad, priv, "one", 4096)
+		if _, e = v.Verify(s); e == nil {
+			t.Errorf("accepted %s", kind)
+		}
+		v.Now = nil
+	}
+}
+func TestDuplicateClaims(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	head := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","typ":"gitgate+jwt","kid":"k"}`))
+	body := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"a","sub":"b"}`))
+	input := head + "." + body
+	token := input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, []byte(input)))
+	v := Verifier{MaxBytes: 4096, Keys: map[string]Key{"k": {Public: pub}}}
+	if _, e := v.Verify(token); e == nil {
+		t.Fatal("duplicate accepted")
+	}
+}

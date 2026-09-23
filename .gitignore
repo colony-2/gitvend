@@ -1,0 +1,7 @@
+/gitgate
+/bin/
+/var/
+*.key
+*.pem
+*.jwt
+.DS_Store
