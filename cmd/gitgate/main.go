@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -322,6 +323,13 @@ func load(path string) (config.Config, error) {
 	return c, nil
 }
 func serve(path string) error {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	return serveWithSignals(path, signals, nil)
+}
+
+func serveWithSignals(path string, signals <-chan os.Signal, ready func(string)) error {
 	c, e := load(path)
 	if e != nil {
 		return e
@@ -339,17 +347,22 @@ func serve(path string) error {
 	current.Store(initial)
 	defer func() { current.Load().Close() }()
 	httpServer := &http.Server{Addr: c.Listen, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { current.Load().ServeHTTP(w, r) }), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 65536}
+	listener, e := net.Listen("tcp", c.Listen)
+	if e != nil {
+		return e
+	}
+	defer listener.Close()
 	errs := make(chan error, 1)
 	go func() {
 		if c.AllowHTTP {
-			errs <- httpServer.ListenAndServe()
+			errs <- httpServer.Serve(listener)
 		} else {
-			errs <- httpServer.ListenAndServeTLS(c.TLSCert, c.TLSKey)
+			errs <- httpServer.ServeTLS(listener, c.TLSCert, c.TLSKey)
 		}
 	}()
-	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(signals)
+	if ready != nil {
+		ready(listener.Addr().String())
+	}
 	slog.Info("Git gateway listening", "address", c.Listen, "revision", c.Revision, "tls", !c.AllowHTTP)
 	for {
 		select {

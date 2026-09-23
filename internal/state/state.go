@@ -113,8 +113,12 @@ func (s *Store) Bind(key string, id int64) (Repository, error) {
 		if id <= 0 || r.ID != 0 && r.ID != id {
 			return fmt.Errorf("repository identity changed")
 		}
+		if r.Reserved && r.ID == 0 {
+			r.Status = "verifying"
+		} else if r.Status != "verifying" {
+			r.Status = "ready"
+		}
 		r.ID = id
-		r.Status = "ready"
 		return putRepo(tx, key, r)
 	})
 	return r, e

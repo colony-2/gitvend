@@ -380,6 +380,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(502, "invalid or unsupported upstream control response")
 			return
 		}
+		if rt.discovery && rt.service == "git-receive-pack" {
+			if e = s.Store.Provisioned(event.Repository, "ready", false); e != nil {
+				fail(503, "provisioning state unavailable")
+				return
+			}
+		}
 		w.Header().Set("Content-Type", ct)
 		if _, e = w.Write(out); e != nil {
 			event.Outcome = "unknown"
@@ -393,7 +399,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	if rt.service == "git-receive-pack" {
 		capture := &captureWriter{limit: int(s.Config.MaxControlBytes)}
-		_, err = io.Copy(w, io.TeeReader(resp.Body, capture))
+		_, err = io.Copy(flushWriter{w}, io.TeeReader(resp.Body, capture))
 		if err != nil || capture.overflow {
 			event.Outcome = "unknown"
 			event.Reason = "incomplete push result"
@@ -403,7 +409,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			event.Details = status
 		}
 	} else {
-		_, err = io.Copy(w, resp.Body)
+		_, err = io.Copy(flushWriter{w}, resp.Body)
 		if err != nil {
 			event.Outcome = "unknown"
 			event.Reason = "interrupted fetch"
@@ -471,6 +477,13 @@ func (e *httpError) Error() string { return e.msg }
 func (s *Server) ensure(ctx context.Context, rt route, id *auth.Identity, create bool, requestID string) error {
 	key := rt.repo.Host + "/" + rt.repo.Path
 	bind := func(repo forge.Repository) error {
+		prior, err := s.Store.Repository(key)
+		if err != nil {
+			return &httpError{503, "repository state unavailable"}
+		}
+		if prior.Reserved && prior.ID == 0 && !repo.Private {
+			return &httpError{409, "provisioned repository violates private profile"}
+		}
 		if want, ok := id.Claims.Grant.Bindings[key]; ok && want != strconv.FormatInt(repo.ID, 10) {
 			return &httpError{403, "repository binding mismatch"}
 		}
@@ -508,6 +521,9 @@ func (s *Server) ensure(ctx context.Context, rt route, id *auth.Identity, create
 	}
 	repo, e = rt.provider.Lookup(ctx, rt.repo.Path)
 	if e == nil {
+		if !repo.Private {
+			return &httpError{409, "concurrent repository violates private profile"}
+		}
 		return bind(repo)
 	}
 	if !errors.As(e, &status) || status.Status != 404 {
@@ -539,12 +555,23 @@ func (s *Server) ensure(ctx context.Context, rt route, id *auth.Identity, create
 		_ = s.Store.Audit(event)
 		return e
 	}
-	if e = s.Store.Provisioned(key, "ready", created); e != nil {
+	if e = s.Store.Provisioned(key, "verifying", created); e != nil {
 		return &httpError{503, "provisioning state unavailable"}
 	}
-	event.Outcome = "accepted"
+	event.Outcome = "created-awaiting-git"
 	if e = s.Store.Audit(event); e != nil {
 		return &httpError{503, "audit storage unavailable"}
 	}
 	return nil
+}
+
+// Flush sideband progress and pack chunks without buffering an entire response.
+type flushWriter struct{ w http.ResponseWriter }
+
+func (f flushWriter) Write(b []byte) (int, error) {
+	n, e := f.w.Write(b)
+	if e == nil {
+		e = http.NewResponseController(f.w).Flush()
+	}
+	return n, e
 }

@@ -170,3 +170,24 @@ func FuzzWire(f *testing.F) {
 		FilterPushAdvertisement(b, func(string) bool { return false })
 	})
 }
+
+func TestStatus(t *testing.T) {
+	updates := []Update{{Ref: "refs/heads/a"}, {Ref: "refs/heads/b"}}
+	for _, tt := range []struct {
+		body []byte
+		want string
+	}{{packets("unpack ok", "ok refs/heads/a", "ok refs/heads/b", "flush"), "accepted"}, {packets("unpack ok", "ok refs/heads/a", "ng refs/heads/b hook declined", "flush"), "partial"}, {packets("unpack bad pack", "flush"), "rejected"}, {packets("unpack ok", "ng refs/heads/a no", "ng refs/heads/b no", "flush"), "rejected"}, {packets("unpack ok", "ok refs/heads/a", "flush"), "unknown"}, {packets("unpack ok", "ok refs/heads/other", "flush"), "unknown"}, {[]byte("bad"), "unknown"}, {packets("unpack ok", "option refname refs/heads/other", "flush"), "unknown"}} {
+		if got := Status(tt.body, updates).Outcome; got != tt.want {
+			t.Errorf("%q got %s want %s", tt.body, got, tt.want)
+		}
+	}
+	inner := packets("unpack ok", "ok refs/heads/a", "ok refs/heads/b", "flush")
+	outer := append(Line("\x02progress\n"), Line("\x01"+string(inner))...)
+	outer = append(outer, []byte("0000")...)
+	if got := Status(outer, updates).Outcome; got != "accepted" {
+		t.Fatal(got)
+	}
+	if got := Status(Line("\x03failure"), updates).Outcome; got != "rejected" {
+		t.Fatal(got)
+	}
+}

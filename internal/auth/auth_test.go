@@ -63,3 +63,40 @@ func TestDuplicateClaims(t *testing.T) {
 		t.Fatal("duplicate accepted")
 	}
 }
+
+func TestStrictProfile(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	v := Verifier{Audience: "gitgate", Keys: map[string]Key{"one": {Issuer: "issuer", Public: pub}}, MaxBytes: 4096, MaxLifetime: 15 * time.Minute, Leeway: 0}
+	fresh := func() *Claims {
+		return NewClaims("issuer", "agent", "gitgate", time.Minute, Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}})
+	}
+	for _, change := range []func(*Claims){func(c *Claims) { c.ID = "" }, func(c *Claims) { c.Subject = "" }, func(c *Claims) { c.IssuedAt = nil }, func(c *Claims) { c.NotBefore = nil }, func(c *Claims) { c.ExpiresAt = nil }, func(c *Claims) { c.Audience = []string{"gitgate", "other"} }, func(c *Claims) { c.Grant.Version = 9 }, func(c *Claims) { c.Grant.Bindings = map[string]string{"github.com/org/*": "1"} }} {
+		c := fresh()
+		change(c)
+		s, e := Sign(c, priv, "one", 4096)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = v.Verify(s); e == nil {
+			t.Fatal("invalid claims accepted")
+		}
+	}
+	c := fresh()
+	s, _ := Sign(c, priv, "unknown", 4096)
+	if _, e := v.Verify(s); e == nil {
+		t.Fatal("unknown key")
+	}
+	s, _ = Sign(c, priv, "one", 4096)
+	v.MaxBytes = 10
+	if _, e := v.Verify(s); e == nil {
+		t.Fatal("token size")
+	}
+	if _, e := Sign(c, priv, "one", 10); e == nil {
+		t.Fatal("issuer size")
+	}
+	for _, bad := range []string{"garbage", "a.b.c", "a.b"} {
+		if _, e := v.Verify(bad); e == nil {
+			t.Fatal(bad)
+		}
+	}
+}

@@ -369,3 +369,101 @@ func TestProvisioningWaitCancellation(t *testing.T) {
 		t.Fatal(fmt.Sprint(s.locks))
 	}
 }
+
+func TestRealGitPartialAtomicForceAndTags(t *testing.T) {
+	f := newFixture(t)
+	hook := filepath.Join(f.root, "org/repo.git/hooks/update")
+	if e := os.WriteFile(hook, []byte("#!/bin/sh\ncase \"$1\" in *reject*) exit 1;; esac\nexit 0\n"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	out, e := gitRun(f.work, f.token, "push", f.url, "HEAD:refs/heads/agents/a/pass", "HEAD:refs/heads/agents/a/reject")
+	if e == nil {
+		t.Fatal("hook should reject one", out)
+	}
+	git(t, f.root, "--git-dir="+filepath.Join(f.root, "org/repo.git"), "rev-parse", "refs/heads/agents/a/pass")
+	events, _ := f.store.Events()
+	partial := false
+	for _, ev := range events {
+		if ev.Outcome == "partial" {
+			partial = true
+		}
+	}
+	if !partial {
+		t.Fatal("partial push not audited")
+	}
+	out, e = gitRun(f.work, f.token, "push", "--atomic", f.url, "HEAD:refs/heads/agents/a/atomic-pass", "HEAD:refs/heads/agents/a/atomic-reject")
+	if e == nil {
+		t.Fatal("atomic push should reject", out)
+	}
+	if _, e = gitRun(f.root, "", "--git-dir="+filepath.Join(f.root, "org/repo.git"), "show-ref", "--verify", "refs/heads/agents/a/atomic-pass"); e == nil {
+		t.Fatal("atomic push partly succeeded")
+	}
+	git(t, f.work, "checkout", "secret")
+	out, e = gitRun(f.work, f.token, "push", f.url, "HEAD:refs/heads/agents/a/pass")
+	if e != nil {
+		t.Fatal(e, out)
+	}
+	git(t, f.work, "checkout", "main")
+	out, e = gitRun(f.work, f.token, "push", "--force", f.url, "HEAD:refs/heads/agents/a/pass")
+	if e != nil {
+		t.Fatal("force update should be allowed", e, out)
+	}
+	before := f.pushes.Load()
+	out, e = gitRun(f.work, f.token, "push", f.url, "HEAD:refs/tags/v1")
+	if e == nil || f.pushes.Load() != before {
+		t.Fatal("tag escaped branch scope", out)
+	}
+	tagToken := f.sign("github.com/org/repo#refs/tags/v*:rwd")
+	out, e = gitRun(f.work, tagToken, "push", f.url, "HEAD:refs/tags/v1")
+	if e != nil {
+		t.Fatal(e, out)
+	}
+	out, e = gitRun(f.work, tagToken, "ls-remote", f.url)
+	if e != nil || strings.Contains(out, "refs/heads/") || !strings.Contains(out, "refs/tags/v1") {
+		t.Fatal(e, out)
+	}
+}
+func TestRealGitShallowPartialAndDryRun(t *testing.T) {
+	f := newFixture(t)
+	for i, args := range [][]string{{"--depth", "1"}, {"--filter=blob:none"}} {
+		clone := filepath.Join(f.root, fmt.Sprintf("clone-%d", i))
+		all := append([]string{"clone", "--branch", "main"}, args...)
+		all = append(all, f.url, clone)
+		out, e := gitRun(f.root, f.token, all...)
+		if e != nil {
+			t.Fatal(e, out)
+		}
+	}
+	token := f.sign("github.com/org/new*:rc", "github.com/org/new*#agents/a/*:rw")
+	out, e := gitRun(f.work, token, "push", "--dry-run", f.proxy.URL+"/github/org/new-dry.git", "HEAD:refs/heads/agents/a/first")
+	if e != nil {
+		t.Fatal(e, out)
+	}
+	if f.creates.Load() != 1 || f.pushes.Load() != 0 {
+		t.Fatal("dry run behavior", f.creates.Load(), f.pushes.Load())
+	}
+}
+func TestCreationFailureAndRecovery(t *testing.T) {
+	f := newFixture(t)
+	f.denyCreate = true
+	token := f.sign("github.com/org/new*:rc", "github.com/org/new*#agents/a/*:rw")
+	resp := f.request("GET", "/github/org/new-one.git/info/refs?service=git-receive-pack", token, "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != 503 {
+		t.Fatal(resp.StatusCode)
+	}
+	record, e := f.store.Repository("github.com/org/new-one")
+	if e != nil || record.Status != "unknown" || !record.Reserved {
+		t.Fatal(record, e)
+	}
+	f.denyCreate = false
+	resp = f.request("GET", "/github/org/new-one.git/info/refs?service=git-receive-pack", token, "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatal(resp.StatusCode)
+	}
+	record, e = f.store.Repository("github.com/org/new-one")
+	if e != nil || record.Status != "ready" {
+		t.Fatal(record, e)
+	}
+}

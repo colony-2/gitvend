@@ -82,12 +82,19 @@ func Status(b []byte, updates []Update) PushStatus {
 		return out
 	}
 	if out.Unpack == "ok" && len(out.Refs) == len(updates) {
-		out.Outcome = "accepted"
+		accepted := 0
 		for _, s := range out.Refs {
-			if s != "ok" {
-				out.Outcome = "rejected"
-				break
+			if s == "ok" {
+				accepted++
 			}
+		}
+		switch accepted {
+		case len(out.Refs):
+			out.Outcome = "accepted"
+		case 0:
+			out.Outcome = "rejected"
+		default:
+			out.Outcome = "partial"
 		}
 	}
 	return out
