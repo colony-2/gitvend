@@ -2,7 +2,7 @@
 
 A Go Git/HTTPS gateway with permissions carried in signed JWTs. Agents use ordinary Git and one gateway credential across their assigned repositories. The gateway holds a shared upstream token and enforces repository, ref-discovery, branch-write, tag and repository-creation permissions before forwarding requests.
 
-Implemented for GitHub and GitHub Enterprise-compatible APIs. Client and upstream Git connections use HTTPS; fetch/ref lookup requires protocol v2, while pushes use Git's normal receive-pack format. The service does not require a GitHub App.
+Implemented for GitHub and GitHub Enterprise-compatible APIs. Client and upstream Git connections use HTTPS; fetch/ref lookup requires protocol v2, while pushes use Git's normal receive-pack format. The service does not require a GitHub App. The gateway is stateless: it needs configuration, public verification keys and upstream credentials, with no database or writable state volume. Multiple instances can serve the same agents.
 
 This guide takes an operator from configuring a gateway to giving an agent a credential, cloning a repository, and pushing an allowed branch.
 
@@ -91,7 +91,7 @@ Keep `var/signing.key` on that machine. Copy **only** `signing.pub` to `var/sign
 
 ### 3. Configure and start the server
 
-On the gateway, create its writable state directory and copy the [configuration template](examples/gitvend.json) from the source checkout or release archive. If installed through Go or npm, obtain that template separately from this repository:
+On the gateway, prepare the public-key directory and copy the [configuration template](examples/gitvend.json) from the source checkout or release archive. If installed through Go or npm, obtain that template separately from this repository:
 
 ```sh
 mkdir -p var
@@ -104,7 +104,6 @@ Edit `gitvend.json` using this checklist:
 | --- | --- |
 | `listen` | `0.0.0.0:8443` to accept connections on the gateway's network interfaces. The template binds to `127.0.0.1:8443` for local access. |
 | `tls_cert`, `tls_key` | Readable certificate/key files for `git-gateway.example`, trusted by the agents. |
-| `state_file` | A persistent, writable database path; default `var/gitvend.db`. |
 | `keys[].public_key_file` | The public key installed in step 2. |
 | `keys[].owners` and `providers[].allowed_owners` | Your lowercase organization names in both places. |
 | `providers[].credential.secret_ref` | `env:GITHUB_TOKEN` or the mounted token file reference. |
@@ -159,7 +158,7 @@ gitvend sign \
   -output var/agent-47.jwt
 ```
 
-Alternatively, pass `-grant examples/grant.json`. The file contains `v`, `permissions`, and optional `bindings` mapping canonical `host/owner/repository` names to string-valued provider repository IDs. `-output` replaces the token file atomically with permissions `0600`; without it, `sign` writes the token to stdout. `keygen` refuses to overwrite existing key files.
+Alternatively, pass `-grant examples/grant.json`. The file contains `v` and the `permissions` array. Permissions follow repository names, including future repositories with matching names; there are no repository-ID bindings. `-output` replaces the token file atomically with permissions `0600`; without it, `sign` writes the token to stdout. `keygen` refuses to overwrite existing key files.
 
 JWTs use Ed25519 signatures (`alg=EdDSA`, `typ=gitvend+jwt`). Verification requires the configured issuer, key ID and audience plus subject, token ID, issued-at, not-before, expiry and grant version. Unknown fields, duplicate JSON keys, unsupported algorithms and malformed rules are rejected. The gateway needs no issued-token database and never contacts the issuer on a Git request.
 
@@ -275,7 +274,7 @@ gitvend explain \
   -action ref.update
 ```
 
-The example returns `"allowed": false`. `explain` evaluates only the rules you pass; include applicable deny rules yourself. It does not load server configuration, verify a JWT, or check GitHub permissions. A valid explanation command exits successfully even for a denied decision; inspect `allowed`. A `repo.create` explanation evaluates the `c` permission only, not the additional branch-overlap, quota or upstream checks.
+The example returns `"allowed": false`. `explain` evaluates only the rules you pass; include applicable deny rules yourself. It does not load server configuration, verify a JWT, or check GitHub permissions. A valid explanation command exits successfully even for a denied decision; inspect `allowed`. A `repo.create` explanation evaluates the `c` permission only, not the additional branch-overlap or upstream checks.
 
 ## Provisioning and audit
 
@@ -283,23 +282,33 @@ Repository creation is opt-in twice: the provider must set `allow_creation: true
 
 Creation occurs during receive-pack discovery. Consequently, `git push --dry-run`, abandoned pushes and later branch-policy rejections may leave empty repositories. Clone/fetch never creates repositories. Direct receive-pack POSTs cannot create missing repositories. Created repositories are private and uninitialized; the gateway never changes an existing repository's visibility, deletes it, or silently seeds `main`.
 
-The local database records creation reservations, daily quotas, outcomes and stable repository IDs. Same-repository creation requests are serialized. Conflicts and ambiguous create responses are reconciled by lookup; unresolved attempts remain recorded for the next authorized discovery or operator investigation. Existing enrolled repository names cannot silently bind to a different provider ID after deletion/recreation. New JWT bindings can also explicitly pin an ID.
+Concurrent creation is coordinated by the forge's repository-name uniqueness. Different gateway instances may both attempt creation; after a conflict or ambiguous response, gitvend looks up the name and checks that the resulting repository is private and matches the requested owner/name. It never changes an existing repository's visibility. If the outcome cannot be confirmed, the request fails with 503; a later normal push discovery performs a fresh lookup. There are no background reconciliation jobs, creation quotas or stored attempts.
 
-Use a Git response's `X-Request-ID` to locate its recorded request in the audit journal. Audit intent is durable before a push or create is forwarded. Push audit distinguishes success, rejection, partial success and unknown outcomes; HTTP 200 alone is not success. An interrupted push is never automatically retried. A crash can leave an `admitted` record, which must be treated as an unknown outcome.
+Permissions follow repository names. Deleting and recreating a repository under the same name leaves a matching JWT grant applicable to that name. Gitvend does not enroll repositories or pin their IDs.
 
-To inspect the audit journal, stop the server and run the following. Output is one JSON event per line, including identity, repository, operation and outcome when available:
+### Audit logs
+
+`gitvend serve` emits newline-delimited JSON audit records on **stdout** and operational logs on stderr. Collect stdout with your process supervisor or logging service. Gitvend keeps no audit database or outbox and has no `audit` command.
+
+Each JSON record has an `audit` object containing request ID, issuer/subject, token ID, repository, operation and outcome when available. A request can emit an `admitted` event before contacting the upstream and a final outcome with the same `audit.id`. Creation events have a separate ID and an `audit.parent_id` linking them to the Git request's `X-Request-ID` response header. JWT strings, upstream tokens and pack contents are excluded.
+
+For example, inspect an existing log export with `jq`:
 
 ```sh
-gitvend audit -state var/gitvend.db
+jq -c 'select(.audit.operation == "git-receive-pack") | .audit' audit.jsonl
 ```
 
-The first release uses bbolt with an exclusive process lock: **run one gateway instance per state file**. It handles concurrent agents inside that instance. Active-active replicas need a shared transactional state implementation; separate local state files would not share quotas, identity enrollment or provisioning coordination. Preserve and back up the state file. Audit retention/compaction and a metrics export endpoint are not implemented yet.
+Push audit distinguishes `accepted`, `rejected`, `partial` and `unknown`; HTTP 200 alone is not success. Creation outcomes are `created`, `reconciled`, `rejected` or `unknown` and do not claim that a subsequent push succeeded. A crash can leave an admission with no final record. Log delivery is best-effort, with retention and durability handled by your logging infrastructure. Inspect the remote refs before retrying an interrupted push; gitvend never retries a push automatically.
+
+### Multiple instances
+
+Run any number of instances behind the same HTTPS endpoint with matching configuration, trusted keys and credentials. No shared disk, database, distributed lock or sticky session is required. Configuration/key rotations must reach each instance; a reload on one instance does not update others. `max_concurrent` and request limits apply per instance. If you need fleet-wide rate limits or creation budgets, enforce them outside gitvend. A metrics export endpoint is not implemented.
 
 ## Configuration and limits
 
-Run the service under a supervisor with a consistent working directory and durable state volume. `SIGTERM` or Ctrl-C starts graceful shutdown with a 10-second drain period; transfers still running afterward are closed.
+Run the service under a supervisor with a consistent working directory and readable configuration/key/credential files. The running gateway can use a read-only filesystem; operator commands such as `keygen` and `sign -output` still write their explicitly requested files. `SIGTERM` or Ctrl-C starts graceful shutdown with a 10-second drain period; transfers still running afterward are closed.
 
-Send `SIGHUP` to atomically reload public keys, issuer ceilings, upstream token files, deny rules and limits. A failed reload preserves the last valid configuration. Changes to the listener, TLS paths or state-file path require restart. Replacing an environment variable requires restarting the process. Config reload does not rewrite credentials already in use by an admitted operation.
+Send `SIGHUP` to atomically reload public keys, issuer ceilings, upstream token files, deny rules and limits. A failed reload preserves the last valid configuration. Changes to the listener or TLS paths require restart. Replacing an environment variable requires restarting the process. Config reload does not rewrite credentials already in use by an admitted operation.
 
 For signing-key rotation, add the new public key under a new `id`, reload, and issue tokens with that `-kid`. Keep the old key configured until its tokens have expired, including clock tolerance, if they should remain valid; then remove it and reload. To rotate an upstream file token, replace that file and reload; the gateway reads upstream credentials at startup/reload, unlike the agent helper, which reads its JWT for each credential request.
 
@@ -314,18 +323,16 @@ Important defaults:
 | `max_pack_bytes` | 1 GiB incoming encoded and decoded request body limits |
 | `max_concurrent` | 64 active Git requests |
 | `request_timeout_seconds` | 1,800 |
-| `creates_per_subject_per_day` | 100, grouped by issuer and subject |
-| `creates_per_owner_per_day` | 1,000 |
 
 The HTTP server accepts up to 64 KiB of headers. Basic authentication expands a JWT by roughly one-third, so ingress limits must accommodate the configured token budget too. Use `sign -max-token-bytes` with the same budget as the gateway. Oversized grants are rejected, never truncated or broadened.
 
-Creation quotas reserve capacity durably before calling the forge. Uncertain/failed creation attempts conservatively retain the reservation for that day; retrying the same recorded attempt does not reserve again. Existing repositories do not consume creation quota. Incoming packs are streamed after their command prefix passes authorization. Pack contents are not inspected for file/path rules or commit ancestry.
+Incoming packs are streamed after their command prefix passes authorization. Pack contents are not inspected for file/path rules or commit ancestry.
 
-Authorized Git requests look up repository metadata through the forge API to verify repository identity. These calls share the upstream credential's API rate limit; this release does not cache metadata or coordinate rate limits across deployments.
+Ordinary clone/fetch/push requests need only the upstream Git endpoint. REST lookups are used during push discovery when both the configuration and JWT permit automatic creation. Those API calls share the upstream credential's rate limit; gitvend does not coordinate rate limits across instances.
 
 ## Troubleshooting
 
-Start with `gitvend version`, `/healthz`, and `git ls-remote --heads` as shown above. Use the HTTP `X-Request-ID` for authenticated Git requests to correlate a failure with the gateway audit journal. Avoid sharing raw credentials or full authorization headers when collecting diagnostics.
+Start with `gitvend version`, `/healthz`, and `git ls-remote --heads` as shown above. Use the HTTP `X-Request-ID` for authenticated Git requests to correlate a failure with the collected audit logs. Avoid sharing raw credentials or full authorization headers when collecting diagnostics.
 
 | Symptom | What to check |
 | --- | --- |
@@ -336,16 +343,16 @@ Start with `gitvend version`, `/healthz`, and `git ls-remote --heads` as shown a
 | HTTP 403 / `push denied for ...` | Inspect the exact destination ref, matching `r` plus `w`/`d` grants, issuer/owner limits and gateway denies. The sample denies writes to main/master. |
 | No refs shown; clone cannot find main or remote HEAD | The requested branch may be absent or hidden. Use an explicitly permitted branch with `--branch`; new scratch repos may have only `agents/47/start`. |
 | HTTP 404 / unsupported route or missing repository | Use `/alias/owner/repo.git`, check allowed owners, and verify the upstream identity can see the repository. Only authorized push discovery can create a missing repo. |
-| Missing repo is not created | Check `allow_creation`, `c`, overlapping branch `rw`, owner limits, quotas and upstream organization permissions. Check the audit journal for an unresolved attempt. |
+| Missing repo is not created | Check `allow_creation`, `c`, overlapping branch `rw`, owner limits and upstream organization permissions. Check the audit logs for an unconfirmed create attempt. |
 | HTTP 429 / gateway busy | The concurrent-request limit is reached. Wait for active requests to finish and retry. |
-| HTTP 409 / creation quota exhausted or repository identity changed | Check creation quotas, prior enrollment and whether the upstream repository was deleted/recreated. Existing repositories do not consume creation quota. |
-| HTTP 502 / upstream request refused or verification failed | Check the upstream token, Git/API base URLs, forge availability/rate limits and repository identity. A gateway JWT cannot overcome upstream restrictions. |
-| HTTP 503 / audit or provisioning state unavailable | Check the state directory, disk space, permissions and database lock. Stop the server before using `audit`. |
+| HTTP 409 / private profile violation | A creation attempt resolved to a non-private repository. Investigate the upstream name/visibility; gitvend will not alter it automatically. |
+| HTTP 502 / upstream request refused or lookup failed | Check the upstream token, Git/API base URLs and forge availability/rate limits. A gateway JWT cannot overcome upstream restrictions. |
+| HTTP 503 / repository creation unconfirmed | The create attempt and follow-up lookup could not confirm success. Check upstream access/availability, then retry normal push discovery. |
 | HTTP 431 or large token rejected at ingress | Align ingress header limits, server `max_token_bytes` and signing `-max-token-bytes`; Basic authentication expands the token. |
 | Push disconnects or audit outcome is `unknown` | Fetch or inspect the permitted remote ref before deciding whether to retry; some or all updates may already have reached GitHub. |
 | npm-installed command reports a missing binary | Check whether install scripts were disabled and whether release downloads were reachable; after fixing that, run `npm rebuild @colony2/gitvend`. |
 
-Deleting and recreating a GitHub repository under the same name changes its ID. Gitvend intentionally refuses to silently replace an enrolled ID. There is no enrollment-reset CLI in this release; investigate with the operator instead of deleting the entire state database, which also holds quotas and audit history.
+When upgrading an earlier checkout, remove `state_file`, `creates_per_subject_per_day` and `creates_per_owner_per_day` from configuration. Remove `bindings` from grant files and reissue any JWTs containing that field. Unknown fields are rejected. Old database files are no longer read by the gateway.
 
 ## CLI reference
 
@@ -359,13 +366,12 @@ For commands that take flags, use `-h` to list them, for example `gitvend sign -
 | `gitvend sign` | Issue a JWT; requires `-key`, `-kid`, `-issuer`, `-subject` and a grant. Use repeated `-permission` **or** `-grant`, not both; `-output` writes an atomic token file. |
 | `gitvend credential` | Git helper; specify `-host` and exactly one of `-token-file` or `-token-env`, followed by `get`, `store` or `erase`. |
 | `gitvend explain` | Explain explicit `-permission` rules for a `-repo`, optional `-ref`, and `-action`. Ref values are fully qualified, such as `refs/heads/main`. |
-| `gitvend audit -state var/gitvend.db` | Print the stored audit journal while the gateway is stopped. |
 
 `explain` actions are `repo.read`, `repo.create`, `ref.discover`, `ref.create`, `ref.update` and `ref.delete`. The default is `ref.update`.
 
 ## Compatibility and verification scope
 
-The automated tests cover real Git v2 discovery/clone/fetch, shallow and partial clones, known-hash reads, standard pushes, ref filtering, mixed denied pushes, tags, deletion, force updates, atomic and partial push outcomes, creation races/recovery, JWT tampering/expiry/size, secret/key reloads, identity substitution and malformed/gzip requests. Parser fuzz targets and race checks are included.
+The automated tests cover real Git v2 discovery/clone/fetch, shallow and partial clones, known-hash reads, standard pushes, ref filtering, mixed denied pushes, tags, deletion, force updates, atomic and partial push outcomes, creation races/recovery, JWT tampering/expiry/size, secret/key reloads, independent replicas, name-based permissions and malformed/gzip requests. Parser fuzz targets and race checks are included.
 
 Supported object format is SHA-1. SSH, Git LFS, Git protocol v0/v1 fetch, signed push certificates, push options, named shallow exclusions, ref-in-want, offloaded pack/bundle URLs and provider-managed ref namespaces are rejected or not advertised. Branch writes can include workflow files; CI execution and secrets remain governed by the forge's configuration. GitHub branch rules continue to apply to the shared upstream identity.
 

@@ -102,7 +102,7 @@ Examples of overlap:
 - `github.com/*:r` plus `github.com/fooorg/red#main:rw`: all configured GitHub repositories remain readable/discoverable. The narrower rule adds main writes; it does not narrow the broad read grant.
 - `github.com/fooorg/*:rwd` plus `!github.com/fooorg/*#(main|master):wd`: keep those branches readable while preventing creation, updates and deletion, even if another allow grants them.
 
-Wildcard grants are evaluated against the current repository/ref name at request time. They intentionally cover future matching repositories and branches, subject to local provider access. Existing enrolled repositories can still have stable-ID bindings in gateway metadata or optional signed `bindings`; a name pattern does not override such a binding. If exact identity pinning is required without gateway enrollment, the issuer must include the binding, at a token-size cost.
+Grants are evaluated against the current repository/ref name at request time. They cover future matching repositories and branches, subject to configured owner access. If a repository is deleted and recreated under the same name, the same matching grant still applies. There is no repository enrollment or ID pinning; the grant contains only `v` and `permissions`.
 
 ## JWT example
 
@@ -133,4 +133,4 @@ Derive internal action checks from the table above. Apply the same canonicalizat
 
 Add a policy-explanation command for issuer/operator use that accepts a grant and concrete repository/ref/action and returns matching allows/denies and the decision. It should also flag obviously broad repository or host grants that make narrower grants redundant, without changing their meaning.
 
-Acceptance cases must cover whole-host shorthand, segment boundaries, nested namespaces, branch slashes, alternatives, escapes, case rules, tags versus branches, overlapping grants/denies, denied branch hash fetches, unknown syntax, duplicate action letters, future matching names, stable-ID bindings and creation eligibility. Reject a malformed rule by rejecting the entire JWT grant, never by silently dropping that rule.
+Acceptance cases must cover whole-host shorthand, segment boundaries, nested namespaces, branch slashes, alternatives, escapes, case rules, tags versus branches, overlapping grants/denies, denied branch hash fetches, unknown syntax, duplicate action letters, future matching names, recreated repository names and creation eligibility. Reject a malformed rule by rejecting the entire JWT grant, never by silently dropping that rule.
