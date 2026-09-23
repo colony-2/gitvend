@@ -1,0 +1,429 @@
+# Adapted from colony-2/c2j; see THIRD_PARTY_NOTICES.md.
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  DEFAULT_BUMP: patch
+  WITH_V: 'true'
+  PRERELEASE: 'false'
+  RELEASE_BRANCHES: main
+  NODE_VERSION: '24'
+  QUILL_VERSION: 'v0.7.1'
+  PROJECT_NAME: gitgate
+  BINARY_NAME: gitgate
+  GO_MAIN_PACKAGE: ./cmd/gitgate
+  NPM_PACKAGE_DIR: npm/gitgate
+  NPM_SCOPE: '@colony2'
+  NPM_DESCRIPTION: Git HTTPS gateway with signed repository and branch permissions
+  NPM_AUTHOR_NAME: Colony 2
+  NPM_AUTHOR_EMAIL: noreply@colony2.com
+  NPM_KEYWORDS_JSON: '["git","github","ai","agent","cli","security"]'
+  NPM_NODE_ENGINE: '>=22.0.0'
+  PROJECT_LICENSE: UNLICENSED
+
+jobs:
+  test:
+    if: github.repository_owner == 'colony-2'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+
+  create-tag:
+    permissions:
+      contents: write
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag_version.outputs.new_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Bump version and push tag
+        id: tag_version
+        uses: anothrNick/github-tag-action@1.75.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: ${{ env.DEFAULT_BUMP }}
+          WITH_V: ${{ env.WITH_V }}
+          PRERELEASE: ${{ env.PRERELEASE }}
+          RELEASE_BRANCHES: ${{ env.RELEASE_BRANCHES }}
+
+  build:
+    needs: create-tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    env:
+      QUILL_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      QUILL_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+      QUILL_NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      QUILL_NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      QUILL_NOTARY_KEY: ${{ secrets.APPLE_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.create-tag.outputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.create-tag.outputs.tag }}"
+          if [ -z "$tag" ]; then
+            echo "Tag creation did not produce a tag; refusing to publish a release." >&2
+            exit 1
+          fi
+
+          git fetch --force --tags
+
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like vMAJOR.MINOR.PATCH, got: $tag" >&2
+            exit 1
+          fi
+
+          if ! git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
+            echo "Tag not found in checkout: $tag" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          commit="$(git rev-list -n 1 "$tag")"
+          date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "commit=$commit"
+            echo "date=$date"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "TAG=$tag"
+            echo "VERSION=$version"
+            echo "COMMIT=$commit"
+            echo "DATE=$date"
+            echo "RELEASE_BASE_URL=https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag"
+          } >> "$GITHUB_ENV"
+
+      - name: Check module tidiness
+        run: go mod tidy -diff
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf dist
+          mkdir -p dist/build
+
+          targets=(
+            "linux amd64 Linux x86_64"
+            "linux arm64 Linux arm64"
+            "darwin amd64 Darwin x86_64"
+            "darwin arm64 Darwin arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r goos goarch os_name arch_name <<< "$target"
+            out_dir="dist/build/${goos}-${goarch}"
+            mkdir -p "$out_dir"
+
+            echo "Building ${goos}/${goarch}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -buildvcs=false \
+              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+              -o "${out_dir}/${BINARY_NAME}" \
+              "${GO_MAIN_PACKAGE}"
+
+            test -s "${out_dir}/${BINARY_NAME}"
+            printf '%s %s %s %s\n' "$goos" "$goarch" "$os_name" "$arch_name" >> dist/targets.txt
+          done
+
+      - name: Check macOS signing configuration
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(
+            QUILL_SIGN_P12
+            QUILL_SIGN_PASSWORD
+            QUILL_NOTARY_ISSUER
+            QUILL_NOTARY_KEY_ID
+            QUILL_NOTARY_KEY
+          )
+
+          present=0
+          missing=()
+          for name in "${required[@]}"; do
+            if [ -n "${!name:-}" ]; then
+              present=$((present + 1))
+            else
+              missing+=("$name")
+            fi
+          done
+
+          if [ "$present" -eq 0 ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "macOS signing/notarization skipped; no Apple signing secrets are set."
+            exit 0
+          fi
+
+          if [ "$present" -ne "${#required[@]}" ]; then
+            printf 'Partial macOS signing configuration. Missing: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install quill
+        if: steps.signing.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install "github.com/anchore/quill/cmd/quill@${QUILL_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Sign and notarize Darwin binaries
+        if: steps.signing.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for binary in dist/build/darwin-*/"${BINARY_NAME}"; do
+            target="$(basename "$(dirname "$binary")")"
+            echo "Signing and notarizing $target"
+            QUILL_LOG_FILE="${RUNNER_TEMP}/quill-${target}.log" quill sign-and-notarize "$binary" -vv
+          done
+
+      - name: Package release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist/release dist/package
+
+          while read -r goos goarch os_name arch_name; do
+            staged="dist/package/${goos}-${goarch}"
+            archive="dist/release/${BINARY_NAME}_${VERSION}_${os_name}_${arch_name}.tar.gz"
+
+            rm -rf "$staged"
+            mkdir -p "$staged"
+            cp "dist/build/${goos}-${goarch}/${BINARY_NAME}" "$staged/${BINARY_NAME}"
+            cp README.md THIRD_PARTY_NOTICES.md "$staged/"
+            cp -R LICENSES examples "$staged/"
+
+            tar_entries=("${BINARY_NAME}" "README.md" "THIRD_PARTY_NOTICES.md" "LICENSES" "examples")
+            if [ -d docs ]; then
+              cp -R docs "$staged/docs"
+              tar_entries+=("docs")
+            fi
+
+            tar -C "$staged" -czf "$archive" "${tar_entries[@]}"
+            tar -tzf "$archive" | sort
+          done < dist/targets.txt
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist/release
+          sha256sum *.tar.gz | sort -k2 > checksums.txt
+          cat checksums.txt
+
+      - name: Smoke test release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (cd dist/release && sha256sum --check checksums.txt)
+
+          for archive in dist/release/*.tar.gz; do
+            echo "Checking archive contents: $archive"
+            tar -tzf "$archive" >/dev/null
+          done
+
+          case "$(uname -m)" in
+            x86_64) host_arch="x86_64" ;;
+            aarch64|arm64) host_arch="arm64" ;;
+            *) echo "Unsupported smoke-test host architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+
+          archive="dist/release/${BINARY_NAME}_${VERSION}_Linux_${host_arch}.tar.gz"
+          extract_dir="$(mktemp -d)"
+          tar -C "$extract_dir" -xzf "$archive"
+
+          got="$("$extract_dir/${BINARY_NAME}" version)"
+          want="${BINARY_NAME} version ${VERSION}"
+          if [ "$got" != "$want" ]; then
+            printf 'Unexpected version output:\n got: %s\nwant: %s\n' "$got" "$want" >&2
+            exit 1
+          fi
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  github-release:
+    permissions:
+      contents: write
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: dist/release
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ env.PROJECT_NAME }} ${{ needs.build.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            dist/release/*.tar.gz
+            dist/release/checksums.txt
+
+  npm:
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - build
+      - github-release
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      VERSION: ${{ needs.build.outputs.version }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Prepare npm package metadata
+        working-directory: ${{ env.NPM_PACKAGE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp ../../README.md README.md
+          cp ../../THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.md
+          cp -R ../../LICENSES LICENSES
+
+          node <<'NODE'
+          const fs = require("fs");
+
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const repo = process.env.GITHUB_REPOSITORY;
+          const project = process.env.PROJECT_NAME;
+          const npmScope = process.env.NPM_SCOPE;
+
+          pkg.name = `${npmScope}/${project}`;
+          pkg.version = process.env.VERSION;
+          pkg.description = process.env.NPM_DESCRIPTION;
+          pkg.license = process.env.PROJECT_LICENSE;
+          pkg.homepage = `https://github.com/${repo}`;
+          pkg.repository = {
+            type: "git",
+            url: `git+https://github.com/${repo}.git`,
+          };
+          pkg.bugs = {
+            url: `https://github.com/${repo}/issues`,
+          };
+          pkg.author = {
+            name: process.env.NPM_AUTHOR_NAME,
+            email: process.env.NPM_AUTHOR_EMAIL,
+          };
+          pkg.keywords = JSON.parse(process.env.NPM_KEYWORDS_JSON);
+          pkg.engines = {
+            node: process.env.NPM_NODE_ENGINE,
+          };
+          pkg.bin = {
+            [project]: "bin/cli.js",
+          };
+
+          fs.writeFileSync("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
+          NODE
+
+          npm pkg get name version description homepage repository bugs author keywords engines bin
+
+      - name: Pack npm package
+        id: pack
+        working-directory: ${{ env.NPM_PACKAGE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run
+          package_file="$(npm pack)"
+          echo "package_file=${package_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Test npm package install
+        working-directory: ${{ env.NPM_PACKAGE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          install_dir="$(mktemp -d)"
+          npm install --prefix "$install_dir" "./${{ steps.pack.outputs.package_file }}"
+
+          got="$("$install_dir/node_modules/.bin/${PROJECT_NAME}" version)"
+          want="${PROJECT_NAME} version ${VERSION}"
+          if [ "$got" != "$want" ]; then
+            printf 'Unexpected npm-installed version output:\n got: %s\nwant: %s\n' "$got" "$want" >&2
+            exit 1
+          fi
+
+      - name: Publish npm package with token
+        if: env.NPM_TOKEN != ''
+        working-directory: ${{ env.NPM_PACKAGE_DIR }}
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Publish npm package with trusted publishing
+        if: env.NPM_TOKEN == ''
+        working-directory: ${{ env.NPM_PACKAGE_DIR }}
+        run: npm publish --access public

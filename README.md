@@ -4,6 +4,21 @@ A Go Git/HTTPS gateway with permissions carried in signed JWTs. Agents use ordin
 
 Implemented for GitHub and GitHub Enterprise-compatible APIs. Client and upstream Git connections use HTTPS; fetch/ref lookup requires protocol v2, while pushes use Git's normal receive-pack format. The service does not require a GitHub App.
 
+## Install
+
+Published releases are available from [GitHub Releases](https://github.com/colony-2/gitgate/releases) as Linux/macOS archives for amd64 and arm64, with SHA-256 checksums. Each archive contains the `gitgate` executable, documentation and example configuration.
+
+Once the first release is published, install through Go or npm:
+
+```sh
+go install github.com/colony-2/gitgate/cmd/gitgate@latest
+# Or use the npm wrapper, which downloads and verifies the matching binary:
+npm install -g @colony2/gitgate
+gitgate version
+```
+
+The npm wrapper requires Node 22+ and `tar`. Install scripts must be enabled so it can download the binary from GitHub Releases. Release builds report their release version; local builds report their Git revision when available.
+
 ## Build and verify
 
 Requires Go 1.25+ and Git for the integration tests. Supported server platforms are Linux and macOS.
@@ -168,3 +183,15 @@ Supported object format is SHA-1. SSH, Git LFS, Git protocol v0/v1 fetch, signed
 No live GitHub credentials were required for the local suite. Validate the chosen account/token, organization creation policy, workflow permissions and GitHub Enterprise version in a disposable organization before deployment; the local API fixture cannot establish those external permissions.
 
 The original requirements and implementation tradeoffs are in [the design](docs/git-proxy-design.md). [c2r](https://github.com/colony-2/c2r) informed the repository-provisioning approach. This implementation uses a small direct GitHub adapter; no c2r source was copied.
+
+## Release automation
+
+The [release workflow](.github/workflows/release.yaml) follows [c2j's release pattern](https://github.com/colony-2/c2j/blob/main/.github/workflows/release.yaml). Successful pushes to `main` in the `colony-2` organization run the test suite, automatically bump and push a version tag (patch by default), build four binaries, and publish GitHub release archives and checksums. It then publishes `@colony2/gitgate` to npm after installing and smoke-testing the packed wrapper against the published assets. There is no container-image build or publication.
+
+GitHub release/tag publication uses the workflow's `GITHUB_TOKEN`. Configure npm trusted publishing for `colony-2/gitgate`, workflow `release.yaml`, or provide an `NPM_TOKEN` with publishing access to `@colony2/gitgate`. The npm package must exist and its trusted publisher must be configured before token-free publication can work; bootstrap it with a token if needed.
+
+macOS signing/notarization is optional. Set all five secrets to enable it: `MACOS_SIGN_P12`, `MACOS_SIGN_PASSWORD`, `APPLE_API_ISSUER`, `APPLE_API_KEY_ID`, and `APPLE_API_KEY`. No signing secrets skips this step; a partial configuration fails the build. Signing requires the matching Apple certificate and notarization credentials.
+
+The reusable [test workflow](.github/workflows/test.yml) runs Go race tests, vet, parser fuzzing and npm installer tests. Run the installer tests locally with `npm test --prefix npm/gitgate`. Release archive smoke tests also check all checksums and run the native binary's `version` command before upload.
+
+Copied release tooling retains its upstream Apache-2.0 license and attribution in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). This repository does not yet declare a project-wide license; npm metadata uses `UNLICENSED`.

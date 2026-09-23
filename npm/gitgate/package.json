@@ -1,0 +1,51 @@
+{
+  "name": "@colony2/gitgate",
+  "version": "0.0.0-development",
+  "description": "Git HTTPS gateway with signed repository and branch permissions",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/colony-2/gitgate",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/colony-2/gitgate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/colony-2/gitgate/issues"
+  },
+  "author": {
+    "name": "Colony 2",
+    "email": "noreply@colony2.com"
+  },
+  "keywords": [
+    "git",
+    "github",
+    "ai",
+    "agent",
+    "cli",
+    "security"
+  ],
+  "bin": {
+    "gitgate": "bin/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "test": "node --test test/*.test.js"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSES/"
+  ]
+}
