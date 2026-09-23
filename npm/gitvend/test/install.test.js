@@ -12,7 +12,7 @@ const { install, releaseAsset, repositoryPath, download } = require("../scripts/
 
 const pkg = { ...require("../package.json"), version: "1.2.3" };
 function temporary(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gitgate-test-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gitvend-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
@@ -23,9 +23,9 @@ test("release asset names match all four build targets", () => {
     ["darwin", "x64", "Darwin_x86_64"], ["darwin", "arm64", "Darwin_arm64"],
   ]) {
     assert.deepEqual(releaseAsset(pkg, platform, arch), {
-      name: "gitgate",
-      assetName: `gitgate_1.2.3_${suffix}.tar.gz`,
-      baseUrl: "https://github.com/colony-2/gitgate/releases/download/v1.2.3",
+      name: "gitvend",
+      assetName: `gitvend_1.2.3_${suffix}.tar.gz`,
+      baseUrl: "https://github.com/colony-2/gitvend/releases/download/v1.2.3",
     });
   }
   assert.throws(() => releaseAsset(pkg, "win32", "x64"), /Unsupported platform/);
@@ -41,23 +41,23 @@ test("installer verifies checksums, installs a runnable binary and preserves it 
   fs.mkdirSync(packageRoot);
   fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify(pkg));
   fs.cpSync(path.join(__dirname, "../bin"), path.join(packageRoot, "bin"), { recursive: true });
-  fs.writeFileSync(path.join(source, "gitgate"), '#!/bin/sh\nprintf "arg=%s\\n" "$@"\nexit 7\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(source, "gitvend"), '#!/bin/sh\nprintf "arg=%s\\n" "$@"\nexit 7\n', { mode: 0o755 });
   const archive = path.join(root, "release.tar.gz");
-  execFileSync("tar", ["-czf", archive, "-C", source, "gitgate"]);
+  execFileSync("tar", ["-czf", archive, "-C", source, "gitvend"]);
   const bytes = fs.readFileSync(archive);
   const hash = crypto.createHash("sha256").update(bytes).digest("hex");
-  let checksum = `${hash}  gitgate_1.2.3_Linux_x86_64.tar.gz\n`;
+  let checksum = `${hash}  gitvend_1.2.3_Linux_x86_64.tar.gz\n`;
   const destinations = [];
   const options = {
     packageRoot, platform: "linux", arch: "x64",
     downloadFile: async (url, dest) => {
-      assert.match(url, /^https:\/\/github.com\/colony-2\/gitgate\/releases\/download\/v1.2.3\//);
+      assert.match(url, /^https:\/\/github.com\/colony-2\/gitvend\/releases\/download\/v1.2.3\//);
       destinations.push(dest);
       fs.writeFileSync(dest, url.endsWith("checksums.txt") ? checksum : bytes);
     },
   };
   await install(options);
-  const binary = path.join(packageRoot, "vendor/gitgate");
+  const binary = path.join(packageRoot, "vendor/gitvend");
   assert.equal(fs.statSync(binary).mode & 0o777, 0o755);
   const result = spawnSync(process.execPath, [path.join(packageRoot, "bin/cli.js"), "version", "space value"], { encoding: "utf8" });
   assert.equal(result.status, 7);
@@ -72,7 +72,7 @@ test("installer verifies checksums, installs a runnable binary and preserves it 
   fs.unlinkSync(binary);
   const missing = spawnSync(process.execPath, [path.join(packageRoot, "bin/cli.js")], { encoding: "utf8" });
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /npm rebuild @colony2\/gitgate/);
+  assert.match(missing.stderr, /npm rebuild @colony2\/gitvend/);
 });
 
 test("download handles redirects, status errors, truncation, limits and timeouts", async (t) => {
@@ -118,17 +118,17 @@ test("download handles redirects, status errors, truncation, limits and timeouts
 test("installer rejects symlink binaries", async (t) => {
   const root = temporary(t);
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(pkg));
-  fs.symlinkSync("/bin/sh", path.join(root, "gitgate"));
+  fs.symlinkSync("/bin/sh", path.join(root, "gitvend"));
   const archive = path.join(root, "archive.tar.gz");
-  execFileSync("tar", ["-czf", archive, "-C", root, "gitgate"]);
+  execFileSync("tar", ["-czf", archive, "-C", root, "gitvend"]);
   const bytes = fs.readFileSync(archive);
   const hash = crypto.createHash("sha256").update(bytes).digest("hex");
   await assert.rejects(install({
     packageRoot: root, platform: "linux", arch: "x64",
     downloadFile: async (url, dest) => fs.writeFileSync(dest, url.endsWith("checksums.txt")
-      ? `${hash}  gitgate_1.2.3_Linux_x86_64.tar.gz\n` : bytes),
+      ? `${hash}  gitvend_1.2.3_Linux_x86_64.tar.gz\n` : bytes),
   }), /regular file/);
-  assert.equal(fs.existsSync(path.join(root, "vendor/gitgate")), false);
+  assert.equal(fs.existsSync(path.join(root, "vendor/gitvend")), false);
 });
 
 test("launcher forwards reload and shutdown signals to the server", { timeout: 5000 }, async (t) => {
@@ -136,7 +136,7 @@ test("launcher forwards reload and shutdown signals to the server", { timeout: 5
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(pkg));
   fs.cpSync(path.join(__dirname, "../bin"), path.join(root, "bin"), { recursive: true });
   fs.mkdirSync(path.join(root, "vendor"));
-  fs.writeFileSync(path.join(root, "vendor/gitgate"), `#!${process.execPath}
+  fs.writeFileSync(path.join(root, "vendor/gitvend"), `#!${process.execPath}
 process.on("SIGHUP", () => console.log("reloaded"));
 process.on("SIGTERM", () => process.exit(0));
 setInterval(() => {}, 1000);

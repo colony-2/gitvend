@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"github.com/colony-2/gitgate/internal/auth"
-	"github.com/colony-2/gitgate/internal/config"
+	"github.com/colony-2/gitvend/internal/auth"
+	"github.com/colony-2/gitvend/internal/config"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -76,7 +76,7 @@ func TestServeReloadAndShutdown(t *testing.T) {
 			t.Error("shutdown timeout")
 		}
 	}()
-	token, e := auth.Sign(auth.NewClaims("issuer", "agent", "gitgate", time.Minute, auth.Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}}), key, "key", 4096)
+	token, e := auth.Sign(auth.NewClaims("issuer", "agent", "gitvend", time.Minute, auth.Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}}), key, "key", 4096)
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -1,4 +1,4 @@
-# gitgate
+# gitvend
 
 A Go Git/HTTPS gateway with permissions carried in signed JWTs. Agents use ordinary Git and one gateway credential across their assigned repositories. The gateway holds a shared upstream token and enforces repository, ref-discovery, branch-write, tag and repository-creation permissions before forwarding requests.
 
@@ -6,15 +6,15 @@ Implemented for GitHub and GitHub Enterprise-compatible APIs. Client and upstrea
 
 ## Install
 
-Published releases are available from [GitHub Releases](https://github.com/colony-2/gitgate/releases) as Linux/macOS archives for amd64 and arm64, with SHA-256 checksums. Each archive contains the `gitgate` executable, documentation and example configuration.
+Published releases are available from [GitHub Releases](https://github.com/colony-2/gitvend/releases) as Linux/macOS archives for amd64 and arm64, with SHA-256 checksums. Each archive contains the `gitvend` executable, documentation and example configuration.
 
 Once the first release is published, install through Go or npm:
 
 ```sh
-go install github.com/colony-2/gitgate/cmd/gitgate@latest
+go install github.com/colony-2/gitvend/cmd/gitvend@latest
 # Or use the npm wrapper, which downloads and verifies the matching binary:
-npm install -g @colony2/gitgate
-gitgate version
+npm install -g @colony2/gitvend
+gitvend version
 ```
 
 The npm wrapper requires Node 22+ and `tar`. Install scripts must be enabled so it can download the binary from GitHub Releases. Release builds report their release version; local builds report their Git revision when available.
@@ -24,7 +24,7 @@ The npm wrapper requires Node 22+ and `tar`. Install scripts must be enabled so 
 Requires Go 1.25+ and Git for the integration tests. Supported server platforms are Linux and macOS.
 
 ```sh
-go build -o gitgate ./cmd/gitgate
+go build -o gitvend ./cmd/gitvend
 go test -race ./...
 go vet ./...
 ```
@@ -38,14 +38,14 @@ go vet ./...
 
    ```sh
    mkdir -p var
-   ./gitgate keygen -private var/signing.key -public var/signing.pub
+   ./gitvend keygen -private var/signing.key -public var/signing.pub
    ```
 
-3. Copy [examples/gitgate.json](examples/gitgate.json) to `gitgate.json`. Replace `fooorg`, TLS certificate paths and the trusted issuer configuration. Provide `GITHUB_TOKEN` through the process environment or change `secret_ref` to a mounted `file:/path/to/token`. Only the public signing key belongs on the gateway; the orchestrator retains the private key.
+3. Copy [examples/gitvend.json](examples/gitvend.json) to `gitvend.json`. Replace `fooorg`, TLS certificate paths and the trusted issuer configuration. Provide `GITHUB_TOKEN` through the process environment or change `secret_ref` to a mounted `file:/path/to/token`. Only the public signing key belongs on the gateway; the orchestrator retains the private key.
 4. Run:
 
    ```sh
-   ./gitgate serve -config gitgate.json
+   ./gitvend serve -config gitvend.json
    ```
 
 Use a trusted TLS certificate. `allow_http: true` is an explicit option for development or an isolated listener behind a trusted TLS terminator; it is off by default. `allow_http_upstream` is separately off by default and exists for local integration testing. Neither option disables certificate verification for HTTPS.
@@ -63,12 +63,12 @@ The `github` URL segment is a server-owned provider alias. Permission strings us
 On the trusted orchestrator, issue a short-lived JWT carrying the task's permissions:
 
 ```sh
-./gitgate sign \
+./gitvend sign \
   -key var/signing.key \
   -kid orchestrator-1 \
   -issuer orchestrator \
   -subject agent-47 \
-  -audience gitgate \
+  -audience gitvend \
   -ttl 15m \
   -permission 'github.com/fooorg/project#main:r' \
   -permission 'github.com/fooorg/project#agents/47/*:rw' \
@@ -79,15 +79,15 @@ On the trusted orchestrator, issue a short-lived JWT carrying the task's permiss
 
 Alternatively, pass `-grant examples/grant.json`. The file contains `v`, `permissions`, and optional `bindings` mapping canonical `host/owner/repository` names to string-valued provider repository IDs. `-output` replaces the token file atomically with permissions `0600`; without it, `sign` writes the token to stdout. `keygen` refuses to overwrite existing key files.
 
-JWTs use Ed25519 signatures (`alg=EdDSA`, `typ=gitgate+jwt`). Verification requires the configured issuer, key ID and audience plus subject, token ID, issued-at, not-before, expiry and grant version. Unknown fields, duplicate JSON keys, unsupported algorithms and malformed rules are rejected. The gateway needs no issued-token database and never contacts the issuer on a Git request.
+JWTs use Ed25519 signatures (`alg=EdDSA`, `typ=gitvend+jwt`). Verification requires the configured issuer, key ID and audience plus subject, token ID, issued-at, not-before, expiry and grant version. Unknown fields, duplicate JSON keys, unsupported algorithms and malformed rules are rejected. The gateway needs no issued-token database and never contacts the issuer on a Git request.
 
-Inject the JWT file into the agent's sandbox, for example at `/run/secrets/gitgate.jwt`. Configure the helper in that sandbox, using the installed absolute path to the executable:
+Inject the JWT file into the agent's sandbox, for example at `/run/secrets/gitvend.jwt`. Configure the helper in that sandbox, using the installed absolute path to the executable:
 
 ```sh
 git config --global protocol.version 2
 git config --global credential.https://git-gateway.example.helper ''
 git config --global --add credential.https://git-gateway.example.helper \
-  '/opt/gitgate credential -host git-gateway.example -token-file /run/secrets/gitgate.jwt'
+  '/opt/gitvend credential -host git-gateway.example -token-file /run/secrets/gitvend.jwt'
 
 git clone --branch main https://git-gateway.example/github/fooorg/project.git
 git -C project push origin HEAD:refs/heads/agents/47/my-task
@@ -123,7 +123,7 @@ Matching allows combine; any matching deny wins. No `#` covers branches and tags
 See [the complete syntax](docs/permission-syntax.md) for wildcard, alternative, escaping and deny semantics. Inspect a decision without making network calls:
 
 ```sh
-./gitgate explain \
+./gitvend explain \
   -permission 'github.com/fooorg/*:r' \
   -permission 'github.com/fooorg/blue*:w' \
   -permission '!github.com/fooorg/*#main:wd' \
@@ -145,7 +145,7 @@ Every request has an `X-Request-ID`. Audit intent is durable before a push or cr
 To inspect the audit journal, stop the server and run:
 
 ```sh
-./gitgate audit -state var/gitgate.db
+./gitvend audit -state var/gitvend.db
 ```
 
 The first release uses bbolt with an exclusive process lock: **run one gateway instance per state file**. It handles concurrent agents inside that instance. Active-active replicas need a shared transactional state implementation; separate local state files would not share quotas, identity enrollment or provisioning coordination. Preserve and back up the state file. Audit retention/compaction and a metrics export endpoint are not implemented yet.
@@ -186,12 +186,12 @@ The original requirements and implementation tradeoffs are in [the design](docs/
 
 ## Release automation
 
-The [release workflow](.github/workflows/release.yaml) follows [c2j's release pattern](https://github.com/colony-2/c2j/blob/main/.github/workflows/release.yaml). Successful pushes to `main` in the `colony-2` organization run the test suite, automatically bump and push a version tag (patch by default), build four binaries, and publish GitHub release archives and checksums. It then publishes `@colony2/gitgate` to npm after installing and smoke-testing the packed wrapper against the published assets. There is no container-image build or publication.
+The [release workflow](.github/workflows/release.yaml) follows [c2j's release pattern](https://github.com/colony-2/c2j/blob/main/.github/workflows/release.yaml). Successful pushes to `main` in the `colony-2` organization run the test suite, automatically bump and push a version tag (patch by default), build four binaries, and publish GitHub release archives and checksums. It then publishes `@colony2/gitvend` to npm after installing and smoke-testing the packed wrapper against the published assets. There is no container-image build or publication.
 
-GitHub release/tag publication uses the workflow's `GITHUB_TOKEN`. Configure npm trusted publishing for `colony-2/gitgate`, workflow `release.yaml`, or provide an `NPM_TOKEN` with publishing access to `@colony2/gitgate`. The npm package must exist and its trusted publisher must be configured before token-free publication can work; bootstrap it with a token if needed.
+GitHub release/tag publication uses the workflow's `GITHUB_TOKEN`. Configure npm trusted publishing for `colony-2/gitvend`, workflow `release.yaml`, or provide an `NPM_TOKEN` with publishing access to `@colony2/gitvend`. The npm package must exist and its trusted publisher must be configured before token-free publication can work; bootstrap it with a token if needed.
 
 macOS signing/notarization is optional. Set all five secrets to enable it: `MACOS_SIGN_P12`, `MACOS_SIGN_PASSWORD`, `APPLE_API_ISSUER`, `APPLE_API_KEY_ID`, and `APPLE_API_KEY`. No signing secrets skips this step; a partial configuration fails the build. Signing requires the matching Apple certificate and notarization credentials.
 
-The reusable [test workflow](.github/workflows/test.yml) runs Go race tests, vet, parser fuzzing and npm installer tests. Run the installer tests locally with `npm test --prefix npm/gitgate`. Release archive smoke tests also check all checksums and run the native binary's `version` command before upload.
+The reusable [test workflow](.github/workflows/test.yml) runs Go race tests, vet, parser fuzzing and npm installer tests. Run the installer tests locally with `npm test --prefix npm/gitvend`. Release archive smoke tests also check all checksums and run the native binary's `version` command before upload.
 
 Copied release tooling retains its upstream Apache-2.0 license and attribution in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). This repository does not yet declare a project-wide license; npm metadata uses `UNLICENSED`.

@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/colony-2/gitgate/internal/auth"
+	"github.com/colony-2/gitvend/internal/auth"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +32,7 @@ func TestKeygenSignAndExplain(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	v := auth.Verifier{Audience: "gitgate", Keys: map[string]auth.Key{"one": {Issuer: "issuer", Public: pk}}, MaxBytes: 4096, MaxLifetime: 15 * time.Minute}
+	v := auth.Verifier{Audience: "gitvend", Keys: map[string]auth.Key{"one": {Issuer: "issuer", Public: pk}}, MaxBytes: 4096, MaxLifetime: 15 * time.Minute}
 	if _, e = v.Verify(strings.TrimSpace(string(raw))); e != nil {
 		t.Fatal(e)
 	}

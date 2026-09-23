@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/colony-2/gitgate/internal/auth"
-	"github.com/colony-2/gitgate/internal/jsonutil"
-	"github.com/colony-2/gitgate/internal/policy"
+	"github.com/colony-2/gitvend/internal/auth"
+	"github.com/colony-2/gitvend/internal/jsonutil"
+	"github.com/colony-2/gitvend/internal/policy"
 )
 
 type Credential struct {
@@ -59,7 +59,7 @@ type Config struct {
 }
 
 func Defaults() Config {
-	return Config{Listen: "127.0.0.1:8443", StateFile: "var/gitgate.db", Audience: "gitgate", MaxTokenBytes: 4096, MaxTokenLifetimeSeconds: 900, ClockSkewSeconds: 30, MaxControlBytes: 4 << 20, MaxPackBytes: 1 << 30, MaxConcurrent: 64, RequestTimeoutSeconds: 1800, CreatesPerSubjectPerDay: 100, CreatesPerOwnerPerDay: 1000}
+	return Config{Listen: "127.0.0.1:8443", StateFile: "var/gitvend.db", Audience: "gitvend", MaxTokenBytes: 4096, MaxTokenLifetimeSeconds: 900, ClockSkewSeconds: 30, MaxControlBytes: 4 << 20, MaxPackBytes: 1 << 30, MaxConcurrent: 64, RequestTimeoutSeconds: 1800, CreatesPerSubjectPerDay: 100, CreatesPerOwnerPerDay: 1000}
 }
 
 var aliasRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)

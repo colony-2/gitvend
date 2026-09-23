@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/colony-2/gitgate/internal/auth"
-	"github.com/colony-2/gitgate/internal/config"
-	"github.com/colony-2/gitgate/internal/forge"
-	"github.com/colony-2/gitgate/internal/gitwire"
-	"github.com/colony-2/gitgate/internal/policy"
-	"github.com/colony-2/gitgate/internal/state"
+	"github.com/colony-2/gitvend/internal/auth"
+	"github.com/colony-2/gitvend/internal/config"
+	"github.com/colony-2/gitvend/internal/forge"
+	"github.com/colony-2/gitvend/internal/gitwire"
+	"github.com/colony-2/gitvend/internal/policy"
+	"github.com/colony-2/gitvend/internal/state"
 )
 
 type Server struct {
@@ -207,19 +207,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, reason, code)
 	}
 	if len(r.Header.Values("Authorization")) != 1 || len(r.Header.Get("Authorization")) > 2*s.Config.MaxTokenBytes+128 {
-		w.Header().Set("WWW-Authenticate", `Basic realm="gitgate"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="gitvend"`)
 		fail(401, "valid gateway JWT required")
 		return
 	}
 	_, password, ok := r.BasicAuth()
 	if !ok {
-		w.Header().Set("WWW-Authenticate", `Basic realm="gitgate"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="gitvend"`)
 		fail(401, "HTTP Basic with JWT password required")
 		return
 	}
 	id, e := s.Verifier.Verify(password)
 	if e != nil {
-		w.Header().Set("WWW-Authenticate", `Basic realm="gitgate"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="gitvend"`)
 		fail(401, "invalid or expired gateway JWT")
 		return
 	}

@@ -1,9 +1,9 @@
 {
   "listen": "127.0.0.1:8443",
-  "tls_cert": "/run/secrets/gitgate.crt",
-  "tls_key": "/run/secrets/gitgate.key",
-  "state_file": "var/gitgate.db",
-  "audience": "gitgate",
+  "tls_cert": "/run/secrets/gitvend.crt",
+  "tls_key": "/run/secrets/gitvend.key",
+  "state_file": "var/gitvend.db",
+  "audience": "gitvend",
   "keys": [
     {
       "id": "orchestrator-1",

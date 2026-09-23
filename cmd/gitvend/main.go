@@ -1,4 +1,4 @@
-// gitgate serves Git smart HTTPS with signed branch/repository grants.
+// gitvend serves Git smart HTTPS with signed branch/repository grants.
 package main
 
 import (
@@ -26,17 +26,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/colony-2/gitgate/internal/auth"
-	"github.com/colony-2/gitgate/internal/config"
-	"github.com/colony-2/gitgate/internal/gateway"
-	"github.com/colony-2/gitgate/internal/jsonutil"
-	"github.com/colony-2/gitgate/internal/policy"
-	"github.com/colony-2/gitgate/internal/state"
+	"github.com/colony-2/gitvend/internal/auth"
+	"github.com/colony-2/gitvend/internal/config"
+	"github.com/colony-2/gitvend/internal/gateway"
+	"github.com/colony-2/gitvend/internal/jsonutil"
+	"github.com/colony-2/gitvend/internal/policy"
+	"github.com/colony-2/gitvend/internal/state"
 )
 
 func main() {
 	if e := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); e != nil {
-		fmt.Fprintln(os.Stderr, "gitgate:", e)
+		fmt.Fprintln(os.Stderr, "gitvend:", e)
 		os.Exit(1)
 	}
 }
@@ -52,18 +52,18 @@ func (s *stringFlags) String() string     { return strings.Join(*s, ",") }
 func (s *stringFlags) Set(v string) error { *s = append(*s, v); return nil }
 func run(args []string, in io.Reader, out, errout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: gitgate serve|keygen|sign|explain|credential|audit|version")
+		return fmt.Errorf("usage: gitvend serve|keygen|sign|explain|credential|audit|version")
 	}
 	switch args[0] {
 	case "version":
 		if len(args) != 1 {
-			return fmt.Errorf("usage: gitgate version")
+			return fmt.Errorf("usage: gitvend version")
 		}
-		fmt.Fprintln(out, "gitgate version", buildVersion())
+		fmt.Fprintln(out, "gitvend version", buildVersion())
 		return nil
 	case "serve":
 		f := flags("serve", errout)
-		path := f.String("config", "gitgate.json", "server config")
+		path := f.String("config", "gitvend.json", "server config")
 		if e := f.Parse(args[1:]); e != nil {
 			return e
 		}
@@ -106,7 +106,7 @@ func run(args []string, in io.Reader, out, errout io.Writer) error {
 		kid := f.String("kid", "", "configured key ID")
 		issuer := f.String("issuer", "", "configured issuer")
 		subject := f.String("subject", "", "agent/task identity")
-		aud := f.String("audience", "gitgate", "service audience")
+		aud := f.String("audience", "gitvend", "service audience")
 		ttl := f.Duration("ttl", 15*time.Minute, "token lifetime")
 		max := f.Int("max-token-bytes", 4096, "serialized JWT budget")
 		grantPath := f.String("grant", "", "JSON grant file (v, permissions, optional bindings)")
@@ -192,7 +192,7 @@ func run(args []string, in io.Reader, out, errout io.Writer) error {
 		return credential(args[1:], in, out, errout)
 	case "audit":
 		f := flags("audit", errout)
-		path := f.String("state", "var/gitgate.db", "state file (server must be stopped)")
+		path := f.String("state", "var/gitvend.db", "state file (server must be stopped)")
 		if e := f.Parse(args[1:]); e != nil {
 			return e
 		}
@@ -232,7 +232,7 @@ func writeExclusive(path string, b []byte) error {
 	return closeErr
 }
 func writeAtomic(path string, b []byte) error {
-	f, e := os.CreateTemp(filepath.Dir(path), ".gitgate-token-*")
+	f, e := os.CreateTemp(filepath.Dir(path), ".gitvend-token-*")
 	if e != nil {
 		return e
 	}

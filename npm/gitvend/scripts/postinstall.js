@@ -26,7 +26,7 @@ function releaseAsset(pkg, platform, arch) {
     throw new Error(`Not a release version: ${pkg.version}`);
   }
   const name = pkg.name.split("/").pop();
-  if (name !== "gitgate") throw new Error("Expected gitgate package name");
+  if (name !== "gitvend") throw new Error("Expected gitvend package name");
   return {
     name,
     assetName: `${name}_${pkg.version}_${target[0]}_${target[1]}.tar.gz`,
@@ -58,7 +58,7 @@ async function install({
     const binary = path.join(extractDir, name);
     if (!fs.lstatSync(binary).isFile()) throw new Error("Release binary must be a regular file");
     fs.mkdirSync(vendorDir, { recursive: true });
-    stagedBinary = path.join(vendorDir, `.gitgate-${crypto.randomBytes(8).toString("hex")}`);
+    stagedBinary = path.join(vendorDir, `.gitvend-${crypto.randomBytes(8).toString("hex")}`);
     fs.copyFileSync(binary, stagedBinary, fs.constants.COPYFILE_EXCL);
     fs.chmodSync(stagedBinary, 0o755);
     fs.renameSync(stagedBinary, path.join(vendorDir, name));

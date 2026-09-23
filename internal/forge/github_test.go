@@ -3,7 +3,7 @@ package forge
 import (
 	"context"
 	"errors"
-	"github.com/colony-2/gitgate/internal/config"
+	"github.com/colony-2/gitvend/internal/config"
 	"io"
 	"net/http"
 	"net/http/httptest"

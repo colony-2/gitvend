@@ -22,10 +22,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/colony-2/gitgate/internal/auth"
-	"github.com/colony-2/gitgate/internal/config"
-	"github.com/colony-2/gitgate/internal/gitwire"
-	"github.com/colony-2/gitgate/internal/state"
+	"github.com/colony-2/gitvend/internal/auth"
+	"github.com/colony-2/gitvend/internal/config"
+	"github.com/colony-2/gitvend/internal/gitwire"
+	"github.com/colony-2/gitvend/internal/state"
 )
 
 type fixture struct {
@@ -89,7 +89,7 @@ func newFixture(t *testing.T) *fixture {
 	git(t, f.work, "push", filepath.Join(f.root, "org/repo.git"), "secret")
 	git(t, f.work, "checkout", "main")
 	execPath := git(t, f.root, "--exec-path")
-	backend := &cgi.Handler{Path: filepath.Join(execPath, "git-http-backend"), Env: []string{"GIT_PROJECT_ROOT=" + f.root, "GIT_HTTP_EXPORT_ALL=1", "REMOTE_USER=gitgate"}}
+	backend := &cgi.Handler{Path: filepath.Join(execPath, "git-http-backend"), Env: []string{"GIT_PROJECT_ROOT=" + f.root, "GIT_HTTP_EXPORT_ALL=1", "REMOTE_USER=gitvend"}}
 	f.upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if r.Header.Get("Authorization") != "Bearer upstream-secret" {
@@ -144,7 +144,7 @@ func newFixture(t *testing.T) *fixture {
 }
 func (f *fixture) sign(rules ...string) string {
 	f.t.Helper()
-	s, e := auth.Sign(auth.NewClaims("test-issuer", "agent-a", "gitgate", 15*time.Minute, auth.Grant{Version: 1, Permissions: rules}), f.key, "test", 4096)
+	s, e := auth.Sign(auth.NewClaims("test-issuer", "agent-a", "gitvend", 15*time.Minute, auth.Grant{Version: 1, Permissions: rules}), f.key, "test", 4096)
 	if e != nil {
 		f.t.Fatal(e)
 	}

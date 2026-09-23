@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/colony-2/gitgate/internal/jsonutil"
-	"github.com/colony-2/gitgate/internal/policy"
+	"github.com/colony-2/gitvend/internal/jsonutil"
+	"github.com/colony-2/gitvend/internal/policy"
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const Type = "gitgate+jwt"
+const Type = "gitvend+jwt"
 
 type Grant struct {
 	Version     int               `json:"v"`

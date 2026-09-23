@@ -3,7 +3,7 @@ package gitwire
 import (
 	"bytes"
 	"fmt"
-	"github.com/colony-2/gitgate/internal/policy"
+	"github.com/colony-2/gitvend/internal/policy"
 	"io"
 	"strconv"
 	"strings"

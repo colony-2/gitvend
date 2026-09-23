@@ -4,7 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"github.com/colony-2/gitgate/internal/policy"
+	"github.com/colony-2/gitvend/internal/policy"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +12,8 @@ import (
 
 func TestJWT(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	v := Verifier{Audience: "gitgate", Keys: map[string]Key{"one": {Issuer: "issuer", Public: pub, Owners: map[string][]string{"github.com": {"org"}}}}, MaxBytes: 4096, MaxLifetime: 15 * time.Minute, Leeway: 30 * time.Second}
-	c := NewClaims("issuer", "agent", "gitgate", time.Minute, Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}})
+	v := Verifier{Audience: "gitvend", Keys: map[string]Key{"one": {Issuer: "issuer", Public: pub, Owners: map[string][]string{"github.com": {"org"}}}}, MaxBytes: 4096, MaxLifetime: 15 * time.Minute, Leeway: 30 * time.Second}
+	c := NewClaims("issuer", "agent", "gitvend", time.Minute, Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}})
 	raw, e := Sign(c, priv, "one", 4096)
 	if e != nil {
 		t.Fatal(e)
@@ -54,7 +54,7 @@ func TestJWT(t *testing.T) {
 }
 func TestDuplicateClaims(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	head := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","typ":"gitgate+jwt","kid":"k"}`))
+	head := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","typ":"gitvend+jwt","kid":"k"}`))
 	body := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"a","sub":"b"}`))
 	input := head + "." + body
 	token := input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, []byte(input)))
@@ -66,11 +66,11 @@ func TestDuplicateClaims(t *testing.T) {
 
 func TestStrictProfile(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	v := Verifier{Audience: "gitgate", Keys: map[string]Key{"one": {Issuer: "issuer", Public: pub}}, MaxBytes: 4096, MaxLifetime: 15 * time.Minute, Leeway: 0}
+	v := Verifier{Audience: "gitvend", Keys: map[string]Key{"one": {Issuer: "issuer", Public: pub}}, MaxBytes: 4096, MaxLifetime: 15 * time.Minute, Leeway: 0}
 	fresh := func() *Claims {
-		return NewClaims("issuer", "agent", "gitgate", time.Minute, Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}})
+		return NewClaims("issuer", "agent", "gitvend", time.Minute, Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}})
 	}
-	for _, change := range []func(*Claims){func(c *Claims) { c.ID = "" }, func(c *Claims) { c.Subject = "" }, func(c *Claims) { c.IssuedAt = nil }, func(c *Claims) { c.NotBefore = nil }, func(c *Claims) { c.ExpiresAt = nil }, func(c *Claims) { c.Audience = []string{"gitgate", "other"} }, func(c *Claims) { c.Grant.Version = 9 }, func(c *Claims) { c.Grant.Bindings = map[string]string{"github.com/org/*": "1"} }} {
+	for _, change := range []func(*Claims){func(c *Claims) { c.ID = "" }, func(c *Claims) { c.Subject = "" }, func(c *Claims) { c.IssuedAt = nil }, func(c *Claims) { c.NotBefore = nil }, func(c *Claims) { c.ExpiresAt = nil }, func(c *Claims) { c.Audience = []string{"gitvend", "other"} }, func(c *Claims) { c.Grant.Version = 9 }, func(c *Claims) { c.Grant.Bindings = map[string]string{"github.com/org/*": "1"} }} {
 		c := fresh()
 		change(c)
 		s, e := Sign(c, priv, "one", 4096)

@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
-	"github.com/colony-2/gitgate/internal/auth"
-	"github.com/colony-2/gitgate/internal/gitwire"
+	"github.com/colony-2/gitvend/internal/auth"
+	"github.com/colony-2/gitvend/internal/gitwire"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -100,7 +100,7 @@ func TestLargeJWTOverHTTP(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		rules = append(rules, "github.com/org/"+strings.Repeat("x", 80)+fmt.Sprint(i)+"#agents/some-agent/*:rw")
 	}
-	claims := auth.NewClaims("test-issuer", "agent-a", "gitgate", 15*time.Minute, auth.Grant{Version: 1, Permissions: rules})
+	claims := auth.NewClaims("test-issuer", "agent-a", "gitvend", 15*time.Minute, auth.Grant{Version: 1, Permissions: rules})
 	token, e := auth.Sign(claims, f.key, "test", 32768)
 	if e != nil || len(token) <= 4096 {
 		t.Fatal(len(token), e)

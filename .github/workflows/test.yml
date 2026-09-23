@@ -21,4 +21,4 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - run: npm test --prefix npm/gitgate
+      - run: npm test --prefix npm/gitvend

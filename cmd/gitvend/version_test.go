@@ -28,7 +28,7 @@ func TestVersion(t *testing.T) {
 	version = "1.2.3"
 	t.Cleanup(func() { version = old })
 	var out bytes.Buffer
-	if err := run([]string{"version"}, nil, &out, &out); err != nil || out.String() != "gitgate version 1.2.3\n" {
+	if err := run([]string{"version"}, nil, &out, &out); err != nil || out.String() != "gitvend version 1.2.3\n" {
 		t.Fatalf("%s: %v", out.String(), err)
 	}
 	if err := run([]string{"version", "unexpected"}, nil, &out, &out); err == nil {

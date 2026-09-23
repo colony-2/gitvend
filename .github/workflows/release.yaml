@@ -20,10 +20,10 @@ env:
   RELEASE_BRANCHES: main
   NODE_VERSION: '24'
   QUILL_VERSION: 'v0.7.1'
-  PROJECT_NAME: gitgate
-  BINARY_NAME: gitgate
-  GO_MAIN_PACKAGE: ./cmd/gitgate
-  NPM_PACKAGE_DIR: npm/gitgate
+  PROJECT_NAME: gitvend
+  BINARY_NAME: gitvend
+  GO_MAIN_PACKAGE: ./cmd/gitvend
+  NPM_PACKAGE_DIR: npm/gitvend
   NPM_SCOPE: '@colony2'
   NPM_DESCRIPTION: Git HTTPS gateway with signed repository and branch permissions
   NPM_AUTHOR_NAME: Colony 2

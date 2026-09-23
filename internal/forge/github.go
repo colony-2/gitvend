@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/colony-2/gitgate/internal/config"
+	"github.com/colony-2/gitvend/internal/config"
 	"io"
 	"net/http"
 	"strings"
@@ -62,7 +62,7 @@ func (g *GitHub) call(ctx context.Context, method, path string, body any) (Repos
 	r.Header.Set("Authorization", "Bearer "+g.APIToken)
 	r.Header.Set("Accept", "application/vnd.github+json")
 	r.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	r.Header.Set("User-Agent", "gitgate")
+	r.Header.Set("User-Agent", "gitvend")
 	if body != nil {
 		r.Header.Set("Content-Type", "application/json")
 	}
@@ -105,7 +105,7 @@ func (g *GitHub) Git(ctx context.Context, method, path, query, service, protocol
 	}
 	r.URL.RawQuery = query
 	r.SetBasicAuth("x-access-token", g.GitToken)
-	r.Header.Set("User-Agent", "gitgate")
+	r.Header.Set("User-Agent", "gitvend")
 	r.Header.Set("Accept-Encoding", "identity")
 	if protocol != "" {
 		r.Header.Set("Git-Protocol", protocol)

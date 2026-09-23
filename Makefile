@@ -1,6 +1,6 @@
 .PHONY: build test check fuzz
 build:
-	go build -o bin/gitgate ./cmd/gitgate
+	go build -o bin/gitvend ./cmd/gitvend
 
 test:
 	go test -race ./...

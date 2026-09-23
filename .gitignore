@@ -1,4 +1,4 @@
-/gitgate
+/gitvend
 /bin/
 /var/
 *.key
@@ -8,7 +8,7 @@
 /.shai/
 /coverage.out
 /dist/
-/npm/gitgate/vendor/
-/npm/gitgate/*.tgz
-/npm/gitgate/node_modules/
-/npm/gitgate/package-lock.json
+/npm/gitvend/vendor/
+/npm/gitvend/*.tgz
+/npm/gitvend/node_modules/
+/npm/gitvend/package-lock.json
