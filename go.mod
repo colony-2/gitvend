@@ -1,4 +1,4 @@
-module gitgate
+module github.com/colony-2/gitgate
 
 go 1.25.0
 

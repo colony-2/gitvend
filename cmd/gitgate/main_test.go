@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"gitgate/internal/auth"
+	"github.com/colony-2/gitgate/internal/auth"
 	"os"
 	"path/filepath"
 	"strings"

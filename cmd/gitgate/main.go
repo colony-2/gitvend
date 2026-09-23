@@ -26,12 +26,12 @@ import (
 	"syscall"
 	"time"
 
-	"gitgate/internal/auth"
-	"gitgate/internal/config"
-	"gitgate/internal/gateway"
-	"gitgate/internal/jsonutil"
-	"gitgate/internal/policy"
-	"gitgate/internal/state"
+	"github.com/colony-2/gitgate/internal/auth"
+	"github.com/colony-2/gitgate/internal/config"
+	"github.com/colony-2/gitgate/internal/gateway"
+	"github.com/colony-2/gitgate/internal/jsonutil"
+	"github.com/colony-2/gitgate/internal/policy"
+	"github.com/colony-2/gitgate/internal/state"
 )
 
 func main() {
@@ -52,9 +52,15 @@ func (s *stringFlags) String() string     { return strings.Join(*s, ",") }
 func (s *stringFlags) Set(v string) error { *s = append(*s, v); return nil }
 func run(args []string, in io.Reader, out, errout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: gitgate serve|keygen|sign|explain|credential|audit")
+		return fmt.Errorf("usage: gitgate serve|keygen|sign|explain|credential|audit|version")
 	}
 	switch args[0] {
+	case "version":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: gitgate version")
+		}
+		fmt.Fprintln(out, "gitgate version", buildVersion())
+		return nil
 	case "serve":
 		f := flags("serve", errout)
 		path := f.String("config", "gitgate.json", "server config")

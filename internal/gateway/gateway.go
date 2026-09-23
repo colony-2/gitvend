@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"gitgate/internal/auth"
-	"gitgate/internal/config"
-	"gitgate/internal/forge"
-	"gitgate/internal/gitwire"
-	"gitgate/internal/policy"
-	"gitgate/internal/state"
+	"github.com/colony-2/gitgate/internal/auth"
+	"github.com/colony-2/gitgate/internal/config"
+	"github.com/colony-2/gitgate/internal/forge"
+	"github.com/colony-2/gitgate/internal/gitwire"
+	"github.com/colony-2/gitgate/internal/policy"
+	"github.com/colony-2/gitgate/internal/state"
 )
 
 type Server struct {

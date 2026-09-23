@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"gitgate/internal/config"
+	"github.com/colony-2/gitgate/internal/config"
 	"io"
 	"net/http"
 	"strings"

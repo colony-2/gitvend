@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"gitgate/internal/jsonutil"
-	"gitgate/internal/policy"
+	"github.com/colony-2/gitgate/internal/jsonutil"
+	"github.com/colony-2/gitgate/internal/policy"
 	"github.com/golang-jwt/jwt/v5"
 )
 

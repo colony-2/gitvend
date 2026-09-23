@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"gitgate/internal/auth"
-	"gitgate/internal/jsonutil"
-	"gitgate/internal/policy"
+	"github.com/colony-2/gitgate/internal/auth"
+	"github.com/colony-2/gitgate/internal/jsonutil"
+	"github.com/colony-2/gitgate/internal/policy"
 )
 
 type Credential struct {

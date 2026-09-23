@@ -4,7 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"gitgate/internal/policy"
+	"github.com/colony-2/gitgate/internal/policy"
 	"strings"
 	"testing"
 	"time"

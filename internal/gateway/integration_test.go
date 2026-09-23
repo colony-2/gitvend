@@ -22,10 +22,10 @@ import (
 	"testing"
 	"time"
 
-	"gitgate/internal/auth"
-	"gitgate/internal/config"
-	"gitgate/internal/gitwire"
-	"gitgate/internal/state"
+	"github.com/colony-2/gitgate/internal/auth"
+	"github.com/colony-2/gitgate/internal/config"
+	"github.com/colony-2/gitgate/internal/gitwire"
+	"github.com/colony-2/gitgate/internal/state"
 )
 
 type fixture struct {
