@@ -14,7 +14,6 @@ import (
 )
 
 type Repository struct {
-	ID       int64  `json:"id"`
 	FullName string `json:"full_name"`
 	Private  bool   `json:"private"`
 }
@@ -79,7 +78,7 @@ func (g *GitHub) call(ctx context.Context, method, path string, body any) (Repos
 		return Repository{}, fmt.Errorf("invalid forge response")
 	}
 	var repo Repository
-	if e = json.Unmarshal(b, &repo); e != nil || repo.ID <= 0 || repo.FullName == "" {
+	if e = json.Unmarshal(b, &repo); e != nil || repo.FullName == "" {
 		return repo, fmt.Errorf("invalid forge repository metadata")
 	}
 	return repo, nil

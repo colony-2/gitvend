@@ -24,6 +24,7 @@ import (
 
 func TestServeReloadAndShutdown(t *testing.T) {
 	dir := t.TempDir()
+	t.Chdir(dir)
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	der, _ := x509.MarshalPKIXPublicKey(pub)
 	pubPath := filepath.Join(dir, "pub")
@@ -41,7 +42,6 @@ func TestServeReloadAndShutdown(t *testing.T) {
 	c.Listen = "127.0.0.1:0"
 	c.AllowHTTP = true
 	c.AllowHTTPUpstream = true
-	c.StateFile = filepath.Join(dir, "state")
 	c.Keys = []config.SigningKey{{ID: "key", Issuer: "issuer", PublicKeyFile: pubPath, Owners: map[string][]string{"github.com": {"org"}}}}
 	c.Providers = []config.Provider{{Alias: "gh", Host: "github.com", Kind: "github", GitBaseURL: up.URL, APIBaseURL: up.URL, AllowedOwners: []string{"org"}, Credential: config.Credential{Kind: "token", SecretRef: "file:" + secret}}}
 	path := filepath.Join(dir, "config.json")
@@ -93,17 +93,17 @@ func TestServeReloadAndShutdown(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	if code := request(); code != 404 || observed.Load() != "Bearer old" {
+	if code := request(); code != 404 || observed.Load() != "Basic eC1hY2Nlc3MtdG9rZW46b2xk" {
 		t.Fatal(code, observed.Load())
 	}
 	os.WriteFile(secret, []byte("new"), 0600)
 	signals <- syscall.SIGHUP
 	until := time.Now().Add(3 * time.Second)
-	for observed.Load() != "Bearer new" && time.Now().Before(until) {
+	for observed.Load() != "Basic eC1hY2Nlc3MtdG9rZW46bmV3" && time.Now().Before(until) {
 		request()
 		time.Sleep(10 * time.Millisecond)
 	}
-	if observed.Load() != "Bearer new" {
+	if observed.Load() != "Basic eC1hY2Nlc3MtdG9rZW46bmV3" {
 		t.Fatal("secret reload failed")
 	}
 	// Invalid reload leaves the running snapshot intact.
@@ -137,9 +137,13 @@ func TestServeReloadAndShutdown(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatal(resp.StatusCode)
 	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("server created runtime files beyond config, public key and token: %v, %v", entries, err)
+	}
 }
 func TestCommandFailures(t *testing.T) {
-	for _, args := range [][]string{{}, {"unknown"}, {"sign"}, {"sign", "-key", "missing", "-kid", "x", "-issuer", "i", "-subject", "s", "-permission", "github.com/*:r"}, {"explain", "-repo", "bad"}, {"explain", "-repo", "github.com/org/r", "-action", "bad", "-permission", "github.com/*:r"}, {"credential", "-host", "proxy.example", "get"}} {
+	for _, args := range [][]string{{}, {"unknown"}, {"audit"}, {"sign"}, {"sign", "-key", "missing", "-kid", "x", "-issuer", "i", "-subject", "s", "-permission", "github.com/*:r"}, {"explain", "-repo", "bad"}, {"explain", "-repo", "github.com/org/r", "-action", "bad", "-permission", "github.com/*:r"}, {"credential", "-host", "proxy.example", "get"}} {
 		var b bytes.Buffer
 		if e := run(args, strings.NewReader(""), &b, &b); e == nil {
 			t.Fatal(fmt.Sprint(args))

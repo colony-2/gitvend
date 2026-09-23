@@ -19,9 +19,8 @@ import (
 const Type = "gitvend+jwt"
 
 type Grant struct {
-	Version     int               `json:"v"`
-	Permissions []string          `json:"permissions"`
-	Bindings    map[string]string `json:"bindings,omitempty"`
+	Version     int      `json:"v"`
+	Permissions []string `json:"permissions"`
 }
 type Claims struct {
 	jwt.RegisteredClaims
@@ -111,14 +110,6 @@ func (v *Verifier) Verify(raw string) (*Identity, error) {
 	}
 	if claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) > v.MaxLifetime || !claims.ExpiresAt.After(claims.IssuedAt.Time) || claims.NotBefore.After(claims.ExpiresAt.Time) {
 		return nil, fmt.Errorf("invalid token lifetime")
-	}
-	if len(claims.Grant.Bindings) > policy.MaxRules {
-		return nil, fmt.Errorf("too many bindings")
-	}
-	for target, id := range claims.Grant.Bindings {
-		if id == "" || len(id) > 128 || strings.ContainsAny(target, "*#()|\\") || strings.Count(target, "/") < 2 {
-			return nil, fmt.Errorf("invalid binding")
-		}
 	}
 	lines := append([]string(nil), claims.Grant.Permissions...)
 	lines = append(lines, v.Denies...)

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"github.com/colony-2/gitvend/internal/policy"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func TestStrictProfile(t *testing.T) {
 	fresh := func() *Claims {
 		return NewClaims("issuer", "agent", "gitvend", time.Minute, Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}})
 	}
-	for _, change := range []func(*Claims){func(c *Claims) { c.ID = "" }, func(c *Claims) { c.Subject = "" }, func(c *Claims) { c.IssuedAt = nil }, func(c *Claims) { c.NotBefore = nil }, func(c *Claims) { c.ExpiresAt = nil }, func(c *Claims) { c.Audience = []string{"gitvend", "other"} }, func(c *Claims) { c.Grant.Version = 9 }, func(c *Claims) { c.Grant.Bindings = map[string]string{"github.com/org/*": "1"} }} {
+	for _, change := range []func(*Claims){func(c *Claims) { c.ID = "" }, func(c *Claims) { c.Subject = "" }, func(c *Claims) { c.IssuedAt = nil }, func(c *Claims) { c.NotBefore = nil }, func(c *Claims) { c.ExpiresAt = nil }, func(c *Claims) { c.Audience = []string{"gitvend", "other"} }, func(c *Claims) { c.Grant.Version = 9 }} {
 		c := fresh()
 		change(c)
 		s, e := Sign(c, priv, "one", 4096)
@@ -98,5 +99,29 @@ func TestStrictProfile(t *testing.T) {
 		if _, e := v.Verify(bad); e == nil {
 			t.Fatal(bad)
 		}
+	}
+}
+
+func TestRemovedBindingsAreRejected(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	claims := NewClaims("issuer", "agent", "gitvend", time.Minute, Grant{Version: 1, Permissions: []string{"github.com/org/*:r"}})
+	raw, err := Sign(claims, priv, "one", 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(raw, ".")
+	b, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["grant"].(map[string]any)["bindings"] = map[string]string{"github.com/org/repo": "123"}
+	b, _ = json.Marshal(payload)
+	parts[1] = base64.RawURLEncoding.EncodeToString(b)
+	input := parts[0] + "." + parts[1]
+	parts[2] = base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, []byte(input)))
+	v := Verifier{Audience: "gitvend", Keys: map[string]Key{"one": {Issuer: "issuer", Public: pub}}, MaxBytes: 4096, MaxLifetime: time.Minute}
+	if _, err := v.Verify(strings.Join(parts, ".")); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatal("removed binding was silently accepted", err)
 	}
 }

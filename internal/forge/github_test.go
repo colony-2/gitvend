@@ -43,7 +43,7 @@ func TestAPIAndCredentials(t *testing.T) {
 	}
 	defer g.Close()
 	r, e := g.Lookup(context.Background(), "org/repo")
-	if e != nil || r.ID != 7 {
+	if e != nil || r.FullName != "org/repo" {
 		t.Fatal(r, e)
 	}
 	if _, e = g.Create(context.Background(), "org", "repo"); e != nil || !gotCreate {

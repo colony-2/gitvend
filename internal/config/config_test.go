@@ -68,3 +68,19 @@ func TestSecrets(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestRemovedStateSettingsAreRejected(t *testing.T) {
+	c := validConfig(t)
+	b, _ := json.Marshal(c)
+	path := filepath.Join(t.TempDir(), "config.json")
+	for _, key := range []string{"state_file", "creates_per_subject_per_day", "creates_per_owner_per_day"} {
+		var fields map[string]any
+		json.Unmarshal(b, &fields)
+		fields[key] = "removed"
+		modified, _ := json.Marshal(fields)
+		os.WriteFile(path, modified, 0600)
+		if _, err := Load(path); err == nil {
+			t.Fatalf("silently accepted obsolete configuration %s", key)
+		}
+	}
+}

@@ -41,7 +41,6 @@ type Config struct {
 	TLSKey                  string       `json:"tls_key"`
 	AllowHTTP               bool         `json:"allow_http"`
 	AllowHTTPUpstream       bool         `json:"allow_http_upstream"`
-	StateFile               string       `json:"state_file"`
 	Audience                string       `json:"audience"`
 	Revision                string       `json:"revision"`
 	Keys                    []SigningKey `json:"keys"`
@@ -54,12 +53,10 @@ type Config struct {
 	MaxPackBytes            int64        `json:"max_pack_bytes"`
 	MaxConcurrent           int          `json:"max_concurrent"`
 	RequestTimeoutSeconds   int          `json:"request_timeout_seconds"`
-	CreatesPerSubjectPerDay int          `json:"creates_per_subject_per_day"`
-	CreatesPerOwnerPerDay   int          `json:"creates_per_owner_per_day"`
 }
 
 func Defaults() Config {
-	return Config{Listen: "127.0.0.1:8443", StateFile: "var/gitvend.db", Audience: "gitvend", MaxTokenBytes: 4096, MaxTokenLifetimeSeconds: 900, ClockSkewSeconds: 30, MaxControlBytes: 4 << 20, MaxPackBytes: 1 << 30, MaxConcurrent: 64, RequestTimeoutSeconds: 1800, CreatesPerSubjectPerDay: 100, CreatesPerOwnerPerDay: 1000}
+	return Config{Listen: "127.0.0.1:8443", Audience: "gitvend", MaxTokenBytes: 4096, MaxTokenLifetimeSeconds: 900, ClockSkewSeconds: 30, MaxControlBytes: 4 << 20, MaxPackBytes: 1 << 30, MaxConcurrent: 64, RequestTimeoutSeconds: 1800}
 }
 
 var aliasRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -83,8 +80,8 @@ func Load(path string) (Config, error) {
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
-	if c.Audience == "" || c.StateFile == "" || len(c.Keys) == 0 || len(c.Providers) == 0 {
-		return fmt.Errorf("audience, state_file, keys and providers are required")
+	if c.Audience == "" || len(c.Keys) == 0 || len(c.Providers) == 0 {
+		return fmt.Errorf("audience, keys and providers are required")
 	}
 	if _, _, e := net.SplitHostPort(c.Listen); e != nil {
 		return fmt.Errorf("invalid listen address")
@@ -92,7 +89,7 @@ func (c Config) Validate() error {
 	if !c.AllowHTTP && (c.TLSCert == "" || c.TLSKey == "") {
 		return fmt.Errorf("TLS cert/key required unless allow_http is explicit")
 	}
-	if c.MaxTokenBytes < 512 || c.MaxTokenBytes > 32768 || c.MaxTokenLifetimeSeconds < 1 || c.MaxTokenLifetimeSeconds > 86400 || c.ClockSkewSeconds < 0 || c.ClockSkewSeconds > 30 || c.MaxControlBytes < 1024 || c.MaxControlBytes > 64<<20 || c.MaxPackBytes < 1024 || c.MaxConcurrent < 1 || c.MaxConcurrent > 10000 || c.RequestTimeoutSeconds < 1 || c.CreatesPerSubjectPerDay < 1 || c.CreatesPerOwnerPerDay < 1 {
+	if c.MaxTokenBytes < 512 || c.MaxTokenBytes > 32768 || c.MaxTokenLifetimeSeconds < 1 || c.MaxTokenLifetimeSeconds > 86400 || c.ClockSkewSeconds < 0 || c.ClockSkewSeconds > 30 || c.MaxControlBytes < 1024 || c.MaxControlBytes > 64<<20 || c.MaxPackBytes < 1024 || c.MaxConcurrent < 1 || c.MaxConcurrent > 10000 || c.RequestTimeoutSeconds < 1 {
 		return fmt.Errorf("invalid resource limit")
 	}
 	seen := map[string]bool{}

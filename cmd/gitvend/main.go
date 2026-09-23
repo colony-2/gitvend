@@ -31,7 +31,6 @@ import (
 	"github.com/colony-2/gitvend/internal/gateway"
 	"github.com/colony-2/gitvend/internal/jsonutil"
 	"github.com/colony-2/gitvend/internal/policy"
-	"github.com/colony-2/gitvend/internal/state"
 )
 
 func main() {
@@ -52,7 +51,7 @@ func (s *stringFlags) String() string     { return strings.Join(*s, ",") }
 func (s *stringFlags) Set(v string) error { *s = append(*s, v); return nil }
 func run(args []string, in io.Reader, out, errout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: gitvend serve|keygen|sign|explain|credential|audit|version")
+		return fmt.Errorf("usage: gitvend serve|keygen|sign|explain|credential|version")
 	}
 	switch args[0] {
 	case "version":
@@ -109,7 +108,7 @@ func run(args []string, in io.Reader, out, errout io.Writer) error {
 		aud := f.String("audience", "gitvend", "service audience")
 		ttl := f.Duration("ttl", 15*time.Minute, "token lifetime")
 		max := f.Int("max-token-bytes", 4096, "serialized JWT budget")
-		grantPath := f.String("grant", "", "JSON grant file (v, permissions, optional bindings)")
+		grantPath := f.String("grant", "", "JSON grant file (v, permissions)")
 		output := f.String("output", "", "atomic token file output; default stdout")
 		revision := f.String("policy-revision", "", "issuer revision for audit")
 		var perms stringFlags
@@ -190,28 +189,6 @@ func run(args []string, in io.Reader, out, errout io.Writer) error {
 		return enc.Encode(map[string]any{"allowed": allowed, "action": d, "repository_read": p.Explain(r, "", "repo.read"), "discovery": p.Explain(r, *ref, "ref.discover")})
 	case "credential":
 		return credential(args[1:], in, out, errout)
-	case "audit":
-		f := flags("audit", errout)
-		path := f.String("state", "var/gitvend.db", "state file (server must be stopped)")
-		if e := f.Parse(args[1:]); e != nil {
-			return e
-		}
-		st, e := state.Open(*path)
-		if e != nil {
-			return e
-		}
-		defer st.Close()
-		events, e := st.Events()
-		if e != nil {
-			return e
-		}
-		enc := json.NewEncoder(out)
-		for _, event := range events {
-			if e = enc.Encode(event); e != nil {
-				return e
-			}
-		}
-		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -340,12 +317,8 @@ func serveWithSignals(path string, signals <-chan os.Signal, ready func(string))
 	if e != nil {
 		return e
 	}
-	st, e := state.Open(c.StateFile)
-	if e != nil {
-		return e
-	}
-	defer st.Close()
-	initial, e := gateway.New(c, st)
+	auditLog := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	initial, e := gateway.New(c, auditLog)
 	if e != nil {
 		return e
 	}
@@ -380,12 +353,12 @@ func serveWithSignals(path string, signals <-chan os.Signal, ready func(string))
 		case sig := <-signals:
 			if sig == syscall.SIGHUP {
 				next, err := load(path)
-				if err == nil && (next.StateFile != c.StateFile || next.Listen != c.Listen || next.AllowHTTP != c.AllowHTTP || next.TLSCert != c.TLSCert || next.TLSKey != c.TLSKey) {
-					err = fmt.Errorf("listener, TLS and state path changes require restart")
+				if err == nil && (next.Listen != c.Listen || next.AllowHTTP != c.AllowHTTP || next.TLSCert != c.TLSCert || next.TLSKey != c.TLSKey) {
+					err = fmt.Errorf("listener and TLS changes require restart")
 				}
 				var fresh *gateway.Server
 				if err == nil {
-					fresh, err = gateway.New(next, st)
+					fresh, err = gateway.New(next, auditLog)
 				}
 				if err != nil {
 					slog.Error("configuration reload rejected", "error", err)

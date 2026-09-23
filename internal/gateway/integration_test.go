@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -10,6 +9,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -22,24 +22,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colony-2/gitvend/internal/audit"
 	"github.com/colony-2/gitvend/internal/auth"
 	"github.com/colony-2/gitvend/internal/config"
 	"github.com/colony-2/gitvend/internal/gitwire"
-	"github.com/colony-2/gitvend/internal/state"
 )
 
 type fixture struct {
-	t                                *testing.T
-	root, work, url, token, secretID string
-	server                           *Server
-	proxy, upstream                  *httptest.Server
-	store                            *state.Store
-	key                              ed25519.PrivateKey
-	mu                               sync.Mutex
-	repos                            map[string]int64
-	nextID                           int64
-	pushes, creates                  atomic.Int32
-	denyCreate                       bool
+	t                                  *testing.T
+	root, work, url, token, secretID   string
+	server                             *Server
+	proxy, upstream                    *httptest.Server
+	logs                               *auditBuffer
+	key                                ed25519.PrivateKey
+	mu                                 sync.Mutex
+	repos                              map[string]int64
+	nextID                             int64
+	pushes, creates, created, apiCalls atomic.Int32
+	denyCreate                         bool
+	createStarted                      chan<- struct{}
+	createRelease                      <-chan struct{}
+	lostCreateResponse                 bool
+	publicCreate                       bool
+	lookupStatus                       int
 }
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -124,22 +129,18 @@ func newFixture(t *testing.T) *fixture {
 	c := config.Defaults()
 	c.AllowHTTP = true
 	c.AllowHTTPUpstream = true
-	c.StateFile = filepath.Join(f.root, "state.db")
 	c.Keys = []config.SigningKey{{ID: "test", Issuer: "test-issuer", PublicKeyFile: keyPath, Owners: map[string][]string{"github.com": {"org"}}}}
 	c.Providers = []config.Provider{{Alias: "github", Host: "github.com", Kind: "github", GitBaseURL: f.upstream.URL, APIBaseURL: f.upstream.URL + "/api", AllowedOwners: []string{"org"}, Credential: config.Credential{Kind: "token", SecretRef: "file:" + tokenFile}, AllowCreation: true}}
-	st, e := state.Open(c.StateFile)
-	if e != nil {
-		t.Fatal(e)
-	}
-	f.store = st
-	f.server, e = New(c, st)
+	f.logs = &auditBuffer{}
+	var e error
+	f.server, e = New(c, slog.New(slog.NewJSONHandler(f.logs, nil)))
 	if e != nil {
 		t.Fatal(e)
 	}
 	f.proxy = httptest.NewServer(f.server)
 	f.url = f.proxy.URL + "/github/org/repo.git"
 	f.token = f.sign("github.com/org/repo#main:r", "github.com/org/repo#agents/a/*:rwd")
-	t.Cleanup(func() { f.proxy.Close(); f.server.Close(); f.upstream.Close(); f.store.Close() })
+	t.Cleanup(func() { f.proxy.Close(); f.server.Close(); f.upstream.Close() })
 	return f
 }
 func (f *fixture) sign(rules ...string) string {
@@ -150,11 +151,11 @@ func (f *fixture) sign(rules ...string) string {
 	}
 	return s
 }
-func (f *fixture) makeRepo(path string) {
+func (f *fixture) makeRepo(path string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.repos[path] != 0 {
-		return
+		return false
 	}
 	repoPath := filepath.Join(f.root, path+".git")
 	os.MkdirAll(filepath.Dir(repoPath), 0700)
@@ -164,8 +165,10 @@ func (f *fixture) makeRepo(path string) {
 	git(f.t, f.root, "--git-dir="+repoPath, "config", "uploadpack.allowAnySHA1InWant", "true")
 	f.nextID++
 	f.repos[path] = f.nextID
+	return true
 }
 func (f *fixture) api(w http.ResponseWriter, r *http.Request) {
+	f.apiCalls.Add(1)
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == "POST" && r.URL.Path == "/api/orgs/org/repos" {
 		f.creates.Add(1)
@@ -178,12 +181,32 @@ func (f *fixture) api(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "rejected", 422)
 			return
 		}
-		f.makeRepo("org/" + input.Name)
+		if f.createStarted != nil {
+			f.createStarted <- struct{}{}
+			select {
+			case <-f.createRelease:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if !f.makeRepo("org/" + input.Name) {
+			http.Error(w, "already exists", 422)
+			return
+		}
+		f.created.Add(1)
+		if f.lostCreateResponse {
+			http.Error(w, "lost response", 500)
+			return
+		}
 		f.mu.Lock()
 		id := f.repos["org/"+input.Name]
 		f.mu.Unlock()
 		w.WriteHeader(201)
-		json.NewEncoder(w).Encode(map[string]any{"id": id, "full_name": "org/" + input.Name, "private": true})
+		json.NewEncoder(w).Encode(map[string]any{"id": id, "full_name": "org/" + input.Name, "private": !f.publicCreate})
+		return
+	}
+	if f.lookupStatus != 0 {
+		http.Error(w, "lookup failed", f.lookupStatus)
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/repos/")
@@ -194,7 +217,7 @@ func (f *fixture) api(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", 404)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"id": id, "full_name": path, "private": true})
+	json.NewEncoder(w).Encode(map[string]any{"id": id, "full_name": path, "private": !f.publicCreate})
 }
 func (f *fixture) request(method, path, token, protocol string, body []byte) *http.Response {
 	f.t.Helper()
@@ -232,7 +255,7 @@ func TestRealGitReadAndWrite(t *testing.T) {
 	git(t, clone, "commit", "-m", "agent change")
 	out, e = gitRun(clone, f.token, "push", "origin", "HEAD:refs/heads/agents/a/task")
 	if e != nil {
-		events, _ := f.store.Events()
+		events := f.events()
 		for _, ev := range events {
 			t.Logf("audit: %+v", ev)
 		}
@@ -258,10 +281,7 @@ func TestRealGitReadAndWrite(t *testing.T) {
 	if e != nil {
 		t.Fatal("allowed delete", e, out)
 	}
-	events, e := f.store.Events()
-	if e != nil {
-		t.Fatal(e)
-	}
+	events := f.events()
 	accepted := false
 	denied := false
 	for _, ev := range events {
@@ -298,12 +318,13 @@ func TestCreateFirstPushAndConcurrency(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if f.creates.Load() != 2 {
-		t.Fatal("duplicate creation", f.creates.Load())
+	if f.created.Load() != 2 {
+		t.Fatal("duplicate creation", f.created.Load())
 	}
+	before := f.creates.Load()
 	read := f.request("GET", "/github/org/scratch-three.git/info/refs?service=git-upload-pack", token, "version=2", nil)
 	read.Body.Close()
-	if read.StatusCode != 404 || f.creates.Load() != 2 {
+	if read.StatusCode != 404 || f.creates.Load() != before {
 		t.Fatal("fetch created repository")
 	}
 }
@@ -334,42 +355,6 @@ func TestDirectPushAndProtocolRejections(t *testing.T) {
 		t.Fatal("denied create")
 	}
 }
-func TestBindingAndAuditFailures(t *testing.T) {
-	f := newFixture(t)
-	resp := f.request("GET", "/github/org/repo.git/info/refs?service=git-upload-pack", f.token, "version=2", nil)
-	resp.Body.Close()
-	f.mu.Lock()
-	f.repos["org/repo"]++
-	f.mu.Unlock()
-	resp = f.request("GET", "/github/org/repo.git/info/refs?service=git-upload-pack", f.token, "version=2", nil)
-	resp.Body.Close()
-	if resp.StatusCode != 409 {
-		t.Fatal("identity replacement", resp.StatusCode)
-	}
-	f.store.Close()
-	resp = f.request("GET", "/github/org/repo.git/info/refs?service=git-upload-pack", f.token, "version=2", nil)
-	resp.Body.Close()
-	if resp.StatusCode != 503 {
-		t.Fatal("audit unavailable", resp.StatusCode)
-	}
-}
-func TestProvisioningWaitCancellation(t *testing.T) {
-	s := &Server{locks: map[string]*lock{}}
-	release, e := s.acquire(context.Background(), "one")
-	if e != nil {
-		t.Fatal(e)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, e = s.acquire(ctx, "one"); e == nil {
-		t.Fatal("expected cancellation")
-	}
-	release()
-	if len(s.locks) != 0 {
-		t.Fatal(fmt.Sprint(s.locks))
-	}
-}
-
 func TestRealGitPartialAtomicForceAndTags(t *testing.T) {
 	f := newFixture(t)
 	hook := filepath.Join(f.root, "org/repo.git/hooks/update")
@@ -381,7 +366,7 @@ func TestRealGitPartialAtomicForceAndTags(t *testing.T) {
 		t.Fatal("hook should reject one", out)
 	}
 	git(t, f.root, "--git-dir="+filepath.Join(f.root, "org/repo.git"), "rev-parse", "refs/heads/agents/a/pass")
-	events, _ := f.store.Events()
+	events := f.events()
 	partial := false
 	for _, ev := range events {
 		if ev.Outcome == "partial" {
@@ -452,18 +437,70 @@ func TestCreationFailureAndRecovery(t *testing.T) {
 	if resp.StatusCode != 503 {
 		t.Fatal(resp.StatusCode)
 	}
-	record, e := f.store.Repository("github.com/org/new-one")
-	if e != nil || record.Status != "unknown" || !record.Reserved {
-		t.Fatal(record, e)
+	unknown := false
+	for _, ev := range f.events() {
+		unknown = unknown || ev.Operation == "repo.create" && ev.Outcome == "unknown"
 	}
+	if !unknown {
+		t.Fatal("uncertain create was not logged")
+	}
+	f.proxy.Close()
+	f.server.Close()
 	f.denyCreate = false
+	f.proxy = f.replica()
 	resp = f.request("GET", "/github/org/new-one.git/info/refs?service=git-receive-pack", token, "", nil)
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatal(resp.StatusCode)
 	}
-	record, e = f.store.Repository("github.com/org/new-one")
-	if e != nil || record.Status != "ready" {
-		t.Fatal(record, e)
+	if f.created.Load() != 1 {
+		t.Fatal("retry did not create repository")
 	}
+}
+
+// Capture exactly the JSON records emitted by the production logger, safely
+// across simultaneous requests and replicas.
+type auditBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *auditBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+func (b *auditBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.b.Bytes()...)
+}
+func (f *fixture) events() []audit.Event {
+	f.t.Helper()
+	var events []audit.Event
+	decoder := json.NewDecoder(bytes.NewReader(f.logs.Bytes()))
+	for {
+		var line struct {
+			Audit audit.Event `json:"audit"`
+		}
+		err := decoder.Decode(&line)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		events = append(events, line.Audit)
+	}
+	return events
+}
+func (f *fixture) replica() *httptest.Server {
+	f.t.Helper()
+	s, err := New(f.server.Config, slog.New(slog.NewJSONHandler(f.logs, nil)))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	proxy := httptest.NewServer(s)
+	f.t.Cleanup(func() { proxy.Close(); s.Close() })
+	return proxy
 }

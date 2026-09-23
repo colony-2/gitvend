@@ -12,34 +12,26 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/colony-2/gitvend/internal/audit"
 	"github.com/colony-2/gitvend/internal/auth"
 	"github.com/colony-2/gitvend/internal/config"
 	"github.com/colony-2/gitvend/internal/forge"
 	"github.com/colony-2/gitvend/internal/gitwire"
 	"github.com/colony-2/gitvend/internal/policy"
-	"github.com/colony-2/gitvend/internal/state"
 )
 
 type Server struct {
 	Config    config.Config
-	Store     *state.Store
+	auditLog  *slog.Logger
 	Verifier  *auth.Verifier
 	Providers map[string]*forge.GitHub
 	slots     chan struct{}
-	mu        sync.Mutex
-	locks     map[string]*lock
-}
-type lock struct {
-	sem   chan struct{}
-	users int
 }
 
-func New(c config.Config, st *state.Store) (*Server, error) {
+func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	if e := c.Validate(); e != nil {
 		return nil, e
 	}
@@ -47,7 +39,10 @@ func New(c config.Config, st *state.Store) (*Server, error) {
 	if e != nil {
 		return nil, e
 	}
-	s := &Server{Config: c, Store: st, Verifier: v, Providers: map[string]*forge.GitHub{}, slots: make(chan struct{}, c.MaxConcurrent), locks: map[string]*lock{}}
+	if logger == nil {
+		return nil, fmt.Errorf("audit logger required")
+	}
+	s := &Server{Config: c, auditLog: logger, Verifier: v, Providers: map[string]*forge.GitHub{}, slots: make(chan struct{}, c.MaxConcurrent)}
 	for _, p := range c.Providers {
 		g, e := forge.New(p)
 		if e != nil {
@@ -61,31 +56,6 @@ func New(c config.Config, st *state.Store) (*Server, error) {
 func (s *Server) Close() {
 	for _, g := range s.Providers {
 		g.Close()
-	}
-}
-func (s *Server) acquire(ctx context.Context, key string) (func(), error) {
-	s.mu.Lock()
-	l := s.locks[key]
-	if l == nil {
-		l = &lock{sem: make(chan struct{}, 1)}
-		s.locks[key] = l
-	}
-	l.users++
-	s.mu.Unlock()
-	drop := func() {
-		s.mu.Lock()
-		l.users--
-		if l.users == 0 {
-			delete(s.locks, key)
-		}
-		s.mu.Unlock()
-	}
-	select {
-	case l.sem <- struct{}{}:
-		return func() { <-l.sem; drop() }, nil
-	case <-ctx.Done():
-		drop()
-		return nil, ctx.Err()
 	}
 }
 func requestID() string {
@@ -184,26 +154,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(deadline)
 	_ = controller.SetWriteDeadline(deadline)
-	event := state.Event{ID: requestID(), Time: time.Now().UTC(), Operation: "request", Outcome: "rejected", ConfigRevision: s.Config.Revision}
+	event := audit.Event{ID: requestID(), Time: time.Now().UTC(), Operation: "request", Outcome: "rejected", ConfigRevision: s.Config.Revision}
 	w.Header().Set("X-Request-ID", event.ID)
-	audited := false
-	defer func() {
-		if audited {
-			if e := s.Store.Audit(event); e != nil {
-				slog.Error("audit finalization failed", "request_id", event.ID)
-			}
-		}
-	}()
+	defer func() { event.Log(s.auditLog) }()
 	fail := func(code int, reason string) {
 		event.Outcome = "rejected"
 		event.Reason = reason
-		if !audited {
-			if e := s.Store.Audit(event); e != nil {
-				http.Error(w, "audit storage unavailable", 503)
-				return
-			}
-			audited = true
-		}
 		http.Error(w, reason, code)
 	}
 	if len(r.Header.Values("Authorization")) != 1 || len(r.Header.Get("Authorization")) > 2*s.Config.MaxTokenBytes+128 {
@@ -319,11 +275,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	event.Outcome = "admitted"
-	if e = s.Store.Audit(event); e != nil {
-		http.Error(w, "audit storage unavailable", 503)
-		return
-	}
-	audited = true
+	event.Log(s.auditLog)
 	canCreate := rt.discovery && rt.service == "git-receive-pack"
 	if e = s.ensure(ctx, rt, id, canCreate, event.ID); e != nil {
 		var he *httpError
@@ -379,12 +331,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if e != nil {
 			fail(502, "invalid or unsupported upstream control response")
 			return
-		}
-		if rt.discovery && rt.service == "git-receive-pack" {
-			if e = s.Store.Provisioned(event.Repository, "ready", false); e != nil {
-				fail(503, "provisioning state unavailable")
-				return
-			}
 		}
 		w.Header().Set("Content-Type", ct)
 		if _, e = w.Write(out); e != nil {
@@ -474,94 +420,56 @@ type httpError struct {
 }
 
 func (e *httpError) Error() string { return e.msg }
+
+// Ordinary Git traffic needs no REST lookup. Only authorized creation discovery
+// inspects the name and reconciles a create attempt with the upstream forge.
 func (s *Server) ensure(ctx context.Context, rt route, id *auth.Identity, create bool, requestID string) error {
-	key := rt.repo.Host + "/" + rt.repo.Path
-	bind := func(repo forge.Repository) error {
-		prior, err := s.Store.Repository(key)
-		if err != nil {
-			return &httpError{503, "repository state unavailable"}
-		}
-		if prior.Reserved && prior.ID == 0 && !repo.Private {
-			return &httpError{409, "provisioned repository violates private profile"}
-		}
-		if want, ok := id.Claims.Grant.Bindings[key]; ok && want != strconv.FormatInt(repo.ID, 10) {
-			return &httpError{403, "repository binding mismatch"}
-		}
-		_, e := s.Store.Bind(key, repo.ID)
-		if e != nil {
-			return &httpError{409, "repository identity changed or state unavailable"}
-		}
+	if !create || !rt.provider.Config.AllowCreation || !id.Policy.Allows(rt.repo, "", "repo.create") {
 		return nil
 	}
-	repo, e := rt.provider.Lookup(ctx, rt.repo.Path)
-	if e == nil {
-		return bind(repo)
+	_, err := rt.provider.Lookup(ctx, rt.repo.Path)
+	if err == nil {
+		return nil
 	}
 	var status *forge.StatusError
-	if !errors.As(e, &status) || status.Status != 404 {
+	if !errors.As(err, &status) || status.Status != 404 {
 		return &httpError{502, "forge repository lookup failed"}
 	}
-	if !create || !rt.provider.Config.AllowCreation || !id.Policy.Allows(rt.repo, "", "repo.create") {
-		return &httpError{404, "repository unavailable"}
-	}
-	eligible, e := id.Policy.CanWrite(rt.repo, true)
-	if e != nil || !eligible {
+	eligible, err := id.Policy.CanWrite(rt.repo, true)
+	if err != nil || !eligible {
 		return &httpError{403, "creation requires a discoverable writable branch"}
 	}
-	if _, pinned := id.Claims.Grant.Bindings[key]; pinned {
-		return &httpError{409, "bound repository unavailable"}
-	}
-	release, e := s.acquire(ctx, key)
-	if e != nil {
-		return &httpError{503, "provisioning wait cancelled"}
-	}
-	defer release()
 	if !time.Now().Before(id.Expiry) {
-		return &httpError{401, "JWT expired while waiting to provision"}
+		return &httpError{401, "JWT expired before repository creation"}
 	}
-	repo, e = rt.provider.Lookup(ctx, rt.repo.Path)
-	if e == nil {
-		if !repo.Private {
-			return &httpError{409, "concurrent repository violates private profile"}
-		}
-		return bind(repo)
-	}
-	if !errors.As(e, &status) || status.Status != 404 {
-		return &httpError{502, "forge repository lookup failed"}
-	}
+	key := rt.repo.Host + "/" + rt.repo.Path
+	event := audit.Event{ID: requestID + "-create", ParentID: requestID, Time: time.Now().UTC(), Issuer: id.Claims.Issuer, Subject: id.Claims.Subject, TokenID: id.Claims.ID, Repository: key, Operation: "repo.create", Outcome: "admitted", PolicyRevision: id.Claims.PolicyRevision, ConfigRevision: s.Config.Revision}
+	event.Log(s.auditLog)
+	defer func() { event.Log(s.auditLog) }()
 	owner, name, _ := strings.Cut(rt.repo.Path, "/")
-	if e = s.Store.Reserve(key, id.Claims.Issuer, id.Claims.Subject, rt.repo.Host+"/"+owner, s.Config.CreatesPerSubjectPerDay, s.Config.CreatesPerOwnerPerDay); e != nil {
-		return &httpError{409, "creation quota exhausted or enrolled repository missing"}
+	repo, err := rt.provider.Create(ctx, owner, name)
+	created := err == nil
+	if err != nil {
+		// Another replica may have won the name, or the create response was lost.
+		// Lookup is safe to retry; never blindly retry the create POST or a push.
+		repo, err = rt.provider.Lookup(ctx, rt.repo.Path)
 	}
-	event := state.Event{ID: requestID + "-create", Time: time.Now().UTC(), Issuer: id.Claims.Issuer, Subject: id.Claims.Subject, TokenID: id.Claims.ID, Repository: key, Operation: "repo.create", Outcome: "admitted", PolicyRevision: id.Claims.PolicyRevision, ConfigRevision: s.Config.Revision}
-	if e = s.Store.Audit(event); e != nil {
-		return &httpError{503, "audit storage unavailable"}
-	}
-	repo, e = rt.provider.Create(ctx, owner, name)
-	created := e == nil
-	if e != nil {
-		repo, e = rt.provider.Lookup(ctx, rt.repo.Path)
-	}
-	if e != nil || !repo.Private {
+	if err != nil {
 		event.Outcome = "unknown"
-		event.Reason = "creation requires reconciliation"
-		_ = s.Store.Provisioned(key, "unknown", false)
-		_ = s.Store.Audit(event)
-		return &httpError{503, "repository creation pending reconciliation"}
+		event.Reason = "could not confirm repository creation"
+		return &httpError{503, "repository creation unconfirmed; retry normal push discovery"}
 	}
-	if e = bind(repo); e != nil {
+	if !repo.Private {
 		event.Outcome = "rejected"
-		event.Reason = "repository binding failed"
-		_ = s.Store.Audit(event)
-		return e
+		event.Reason = "creation resolved to a non-private repository"
+		return &httpError{409, "created or concurrent repository violates private profile"}
 	}
-	if e = s.Store.Provisioned(key, "verifying", created); e != nil {
-		return &httpError{503, "provisioning state unavailable"}
+	if created {
+		event.Outcome = "created"
+	} else {
+		event.Outcome = "reconciled"
 	}
-	event.Outcome = "created-awaiting-git"
-	if e = s.Store.Audit(event); e != nil {
-		return &httpError{503, "audit storage unavailable"}
-	}
+	// Success confirms the repository, not the subsequent discovery or push.
 	return nil
 }
 
