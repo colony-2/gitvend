@@ -1,4 +1,4 @@
-.PHONY: build test check fuzz
+.PHONY: build test check fuzz test-compose
 build:
 	go build -o bin/gitvend ./cmd/gitvend
 
@@ -7,6 +7,9 @@ test:
 
 check: test
 	go vet ./...
+
+test-compose:
+	python3 scripts/test-compose.py
 
 fuzz:
 	go test ./internal/policy -run '^$$' -fuzz FuzzCompile -fuzztime=15s -parallel=2

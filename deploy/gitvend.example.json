@@ -1,0 +1,29 @@
+{
+  "listen": "0.0.0.0:8080",
+  "allow_http": true,
+  "audience": "gitvend",
+  "keys": [
+    {
+      "id": "compose-1",
+      "issuer": "compose",
+      "public_key_file": "/var/lib/gitvend/public/signing.pub",
+      "owners": { "github.com": ["myorg"] }
+    }
+  ],
+  "providers": [
+    {
+      "alias": "github",
+      "host": "github.com",
+      "kind": "github",
+      "git_base_url": "https://github.com",
+      "api_base_url": "https://api.github.com",
+      "allowed_owners": ["myorg"],
+      "credential": {
+        "kind": "token",
+        "secret_ref": "file:/run/secrets/github_token"
+      },
+      "allow_creation": false
+    }
+  ],
+  "denies": ["!github.com/myorg/*#(main|master):wd"]
+}

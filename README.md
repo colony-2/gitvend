@@ -6,7 +6,7 @@ Implemented for GitHub and GitHub Enterprise-compatible APIs. Client and upstrea
 
 This guide takes an operator from configuring a gateway to giving an agent a credential, cloning a repository, and pushing an allowed branch.
 
-[Install](#install) · [Set up the gateway](#set-up-the-gateway) · [Issue a credential](#issue-an-agent-credential) · [Agent usage](#use-gitvend-as-an-agent) · [Permissions](#permission-strings) · [Operations](#provisioning-and-audit) · [Troubleshooting](#troubleshooting) · [CLI reference](#cli-reference)
+[Install](#install) · [Docker Compose](docs/docker-compose.md) · [Set up the gateway](#set-up-the-gateway) · [Issue a credential](#issue-an-agent-credential) · [Agent usage](#use-gitvend-as-an-agent) · [Permissions](#permission-strings) · [Operations](#provisioning-and-audit) · [Troubleshooting](#troubleshooting) · [CLI reference](#cli-reference)
 
 ## How credentials and permissions fit together
 
@@ -41,6 +41,15 @@ gitvend version
 ```
 
 For a Go installation, add `$(go env GOPATH)/bin` to your `PATH` if needed. The npm wrapper requires Node 22+ and `tar`. Install scripts must be enabled so it can download the binary from GitHub Releases. Release builds report their release version; local builds report their Git revision when available.
+
+### Docker Compose
+
+The [Compose deployment guide](docs/docker-compose.md) covers a container image,
+automatic signing-key initialization on persistent volumes, a mounted GitHub
+token, and on-demand JWT issuance. Only the gateway stays running; the private
+signing key is available to initialization and issuer containers, never mounted
+into the gateway. The default stack binds HTTP to host loopback for use behind
+an HTTPS reverse proxy.
 
 ## Build and verify
 
@@ -362,7 +371,7 @@ For commands that take flags, use `-h` to list them, for example `gitvend sign -
 | --- | --- |
 | `gitvend version` | Show the release version or development build identity. |
 | `gitvend serve -config gitvend.json` | Start the gateway. |
-| `gitvend keygen -private signing.key -public signing.pub` | Generate a new issuer key pair without overwriting existing files. |
+| `gitvend keygen -private signing.key -public signing.pub` | Generate a new issuer key pair without overwriting existing files. Add `-if-missing` to validate/reuse persistent keys or recover a missing public key. Parent directories must exist. |
 | `gitvend sign` | Issue a JWT; requires `-key`, `-kid`, `-issuer`, `-subject` and a grant. Use repeated `-permission` **or** `-grant`, not both; `-output` writes an atomic token file. |
 | `gitvend credential` | Git helper; specify `-host` and exactly one of `-token-file` or `-token-env`, followed by `get`, `store` or `erase`. |
 | `gitvend explain` | Explain explicit `-permission` rules for a `-repo`, optional `-ref`, and `-action`. Ref values are fully qualified, such as `refs/heads/main`. |
@@ -381,12 +390,12 @@ The original requirements and implementation tradeoffs are in [the design](docs/
 
 ## Release automation
 
-The [release workflow](.github/workflows/release.yaml) follows [c2j's release pattern](https://github.com/colony-2/c2j/blob/main/.github/workflows/release.yaml). Successful pushes to `main` in the `colony-2` organization run the test suite, automatically bump and push a version tag (patch by default), build four binaries, and publish GitHub release archives and checksums. It then publishes `@colony2/gitvend` to npm after installing and smoke-testing the packed wrapper against the published assets. There is no container-image build or publication.
+The [release workflow](.github/workflows/release.yaml) follows [c2j's release pattern](https://github.com/colony-2/c2j/blob/main/.github/workflows/release.yaml). Successful pushes to `main` in the `colony-2` organization run the test suite, automatically bump and push a version tag (patch by default), build four binaries, and publish GitHub release archives and checksums. It then publishes `@colony2/gitvend` to npm after installing and smoke-testing the packed wrapper against the published assets. It also publishes Linux amd64/arm64 container images to `ghcr.io/colony-2/gitvend` with the release tag and `latest`, using `GITHUB_TOKEN` with package-write permission.
 
 GitHub release/tag publication uses the workflow's `GITHUB_TOKEN`. Configure npm trusted publishing for `colony-2/gitvend`, workflow `release.yaml`, or provide an `NPM_TOKEN` with publishing access to `@colony2/gitvend`. The npm package must exist and its trusted publisher must be configured before token-free publication can work; bootstrap it with a token if needed.
 
 macOS signing/notarization is optional. Set all five secrets to enable it: `MACOS_SIGN_P12`, `MACOS_SIGN_PASSWORD`, `APPLE_API_ISSUER`, `APPLE_API_KEY_ID`, and `APPLE_API_KEY`. No signing secrets skips this step; a partial configuration fails the build. Signing requires the matching Apple certificate and notarization credentials.
 
-The reusable [test workflow](.github/workflows/test.yml) runs Go race tests, vet, parser fuzzing and npm installer tests. Run the installer tests locally with `npm test --prefix npm/gitvend`. Release archive smoke tests also check all checksums and run the native binary's `version` command before upload.
+The reusable [test workflow](.github/workflows/test.yml) runs Go race tests, vet, parser fuzzing, npm installer tests, and the Docker Compose smoke test. Run the installer tests locally with `npm test --prefix npm/gitvend` and the container checks with `make test-compose`. Release archive smoke tests also check all checksums and run the native binary's `version` command before upload.
 
 Copied release tooling retains its upstream Apache-2.0 license and attribution in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). This repository does not yet declare a project-wide license; npm metadata uses `UNLICENSED`.

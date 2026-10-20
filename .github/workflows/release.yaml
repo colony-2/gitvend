@@ -317,6 +317,45 @@ jobs:
             dist/release/*.tar.gz
             dist/release/checksums.txt
 
+  container:
+    permissions:
+      contents: read
+      packages: write
+    needs:
+      - build
+      - github-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.tag }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.build.outputs.tag }}
+            ghcr.io/${{ github.repository }}:latest
+          build-args: |
+            VERSION=${{ needs.build.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   npm:
     permissions:
       contents: read

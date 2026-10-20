@@ -1,0 +1,79 @@
+name: gitvend
+
+x-common: &common
+  image: ${GITVEND_IMAGE:-gitvend:local}
+  build:
+    context: .
+  user: "10001:10001"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
+services:
+  init:
+    <<: *common
+    command:
+      - keygen
+      - -if-missing
+      - -private
+      - /var/lib/gitvend/private/signing.key
+      - -public
+      - /var/lib/gitvend/public/signing.pub
+    network_mode: none
+    restart: "no"
+    volumes:
+      - signing-private:/var/lib/gitvend/private
+      - signing-public:/var/lib/gitvend/public
+
+  gateway:
+    <<: *common
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      - "127.0.0.1:${GITVEND_PORT:-8443}:8080"
+    volumes:
+      - type: bind
+        source: ${GITVEND_CONFIG:-./deploy/gitvend.json}
+        target: /etc/gitvend/gitvend.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - signing-public:/var/lib/gitvend/public:ro
+    secrets: [github_token]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+  issuer:
+    <<: *common
+    profiles: [tools]
+    network_mode: none
+    restart: "no"
+    entrypoint:
+      - gitvend
+      - sign
+      - -key
+      - /var/lib/gitvend/private/signing.key
+      - -kid
+      - compose-1
+      - -issuer
+      - compose
+      - -audience
+      - gitvend
+    command: ["-h"]
+    volumes:
+      - signing-private:/var/lib/gitvend/private:ro
+
+volumes:
+  signing-private:
+  signing-public:
+
+secrets:
+  github_token:
+    file: ${GITHUB_TOKEN_FILE:-./secrets/github_token}

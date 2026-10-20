@@ -71,8 +71,16 @@ func run(args []string, in io.Reader, out, errout io.Writer) error {
 		f := flags("keygen", errout)
 		private := f.String("private", "signing.key", "private key output (must not exist)")
 		public := f.String("public", "signing.pub", "public key output (must not exist)")
+		ifMissing := f.Bool("if-missing", false, "initialize persistent keys, reusing and validating existing keys")
 		if e := f.Parse(args[1:]); e != nil {
 			return e
+		}
+		if *ifMissing {
+			if e := ensureSigningKeys(*private, *public); e != nil {
+				return e
+			}
+			fmt.Fprintln(out, "Signing keys ready")
+			return nil
 		}
 		pub, key, e := ed25519.GenerateKey(rand.Reader)
 		if e != nil {

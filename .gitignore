@@ -12,3 +12,7 @@
 /npm/gitvend/*.tgz
 /npm/gitvend/node_modules/
 /npm/gitvend/package-lock.json
+/deploy/gitvend.json
+/secrets/
+/.env
+/signing-backup.tar
