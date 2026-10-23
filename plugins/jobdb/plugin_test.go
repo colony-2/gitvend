@@ -53,4 +53,30 @@ func TestExecutableJobDBHandshake(t *testing.T) {
 	if err != nil || len(out.Secrets) != 0 {
 		t.Fatal("unauthorized request not omitted over plugin transport")
 	}
+	// Update the running executable without restarting its JobDB process handle.
+	request.TenantID = "alpha"
+	c := testConfig()
+	c.SigningKeyFile, c.PolicyRevision = "signing.key", "live-reload"
+	replaceConfig(t, configPath, c)
+	eventually(t, func() bool {
+		out, err := process.ResolveSecrets(ctx, request)
+		if err != nil || len(out.Secrets) != 2 {
+			t.Fatalf("resolution during plugin reload: %v", err)
+		}
+		read := verify(t, verifier, out.Secrets[readSecret])
+		cell := verify(t, verifier, out.Secrets[cellSecret])
+		if read.Claims.PolicyRevision != cell.Claims.PolicyRevision {
+			t.Fatal("plugin response mixed policy revisions")
+		}
+		return read.Claims.PolicyRevision == "live-reload"
+	})
+	delete(c.Tenants, "alpha")
+	replaceConfig(t, configPath, c)
+	eventually(t, func() bool {
+		out, err := process.ResolveSecrets(ctx, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(out.Secrets) == 0
+	})
 }

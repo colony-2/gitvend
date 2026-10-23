@@ -164,8 +164,29 @@ subject is `jobdb:` followed by the SHA-256 digest of the JSON array
 This binds audit identity to the lease attempt within Gitvend's subject length
 limit. `policy_revision` is copied into the JWT for gateway auditing.
 
-Configuration is loaded once at startup; restart the plugin host after changes.
-Startup and resolution errors never include keys, JWTs or raw configuration.
+Configuration and the referenced signing-key file reload automatically using
+fsnotify on Linux and macOS. The plugin watches their parent directories so
+atomic file replacements continue to be detected. Changes are debounced for
+100 milliseconds, then a fresh configuration and key are fully validated before
+being published together. Each request captures one complete snapshot; an
+in-flight request finishes with its original policy and key, while new requests
+use the replacement. Removed tenants and permissions are removed on reload.
+
+A malformed, missing or unreadable replacement leaves the last valid snapshot
+active. The plugin reports a fixed error message and retries every second until
+loading succeeds, including when a new signing-key path does not exist yet.
+Startup still requires valid files and working directory watches. Changing the
+key path updates the watches after a successful reload. For coordinated key
+rotation, write a new key file first, then atomically replace the config with its
+new path and key ID; provision the corresponding gateway public key beforehand.
+
+Reloading does not revoke already issued JWTs or replace credentials cached by
+JobDB workflows. Use fresh secret resolution to obtain updated permissions.
+Diagnostics go to stderr without keys, JWTs, raw configuration, or raw errors;
+the JobDB host may suppress plugin output. Watching uses local filesystem events,
+with no periodic polling after successful loads. Network filesystems and changes
+to symlink targets outside the watched directories require a different update
+mechanism or restarting the plugin host.
 
 ## Development
 
@@ -174,8 +195,9 @@ make check-jobdb-provider
 ```
 
 Tests verify grants and effective expiry with Gitvend's actual verifier, tenant
-and principal checks, metadata injection rejection, concurrency, and the built
-executable's real JobDB plugin handshake. The separate Go module keeps the JobDB
+and principal checks, metadata injection rejection, concurrent reloads, key
+rotation, invalid-file recovery, and the built executable's real JobDB plugin
+handshake and live reload. The separate Go module keeps the JobDB
 SDK dependencies out of the gateway module. Build this plugin from the checkout;
 its local Gitvend module replacement intentionally uses the same signing and
 permission implementation as that checkout's gateway.

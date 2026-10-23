@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/colony-2/gitvend v0.0.0
 	github.com/colony-2/jobdb v0.0.0-20261023001113-f403447cb58a
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 )
 

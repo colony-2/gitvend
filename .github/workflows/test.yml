@@ -3,6 +3,19 @@ on: [push, pull_request, workflow_call]
 permissions:
   contents: read
 jobs:
+  jobdb-provider-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: plugins/jobdb/go.mod
+          cache-dependency-path: |
+            go.sum
+            plugins/jobdb/go.sum
+      - run: make check-jobdb-provider
   compose:
     runs-on: ubuntu-latest
     steps:
