@@ -1,0 +1,18 @@
+{
+  "issuer": "jobdb",
+  "audience": "gitvend",
+  "key_id": "jobdb",
+  "signing_key_file": "signing.key",
+  "policy_revision": "1",
+  "max_token_bytes": 4096,
+  "max_lifetime_seconds": 900,
+  "gateway_leeway_seconds": 30,
+  "clock_margin_seconds": 1,
+  "cell_metadata_field": "repo",
+  "tenants": {
+    "example": {
+      "read_permissions": ["github.com/*:r"],
+      "cell_write_repositories": ["github.com/example-org/cell-*"]
+    }
+  }
+}

@@ -1,12 +1,19 @@
-.PHONY: build test check fuzz test-compose
+.PHONY: build test check fuzz test-compose build-jobdb-provider check-jobdb-provider
 build:
 	go build -o bin/gitvend ./cmd/gitvend
 
 test:
 	go test -race ./...
 
-check: test
+check: test check-jobdb-provider
 	go vet ./...
+
+build-jobdb-provider:
+	cd plugins/jobdb && go build -o ../../bin/jobdb-gitvend-secret-provider .
+
+check-jobdb-provider:
+	cd plugins/jobdb && go test -race ./...
+	cd plugins/jobdb && go vet ./...
 
 test-compose:
 	python3 scripts/test-compose.py

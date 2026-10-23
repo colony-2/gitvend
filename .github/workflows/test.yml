@@ -21,10 +21,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            plugins/jobdb/go.sum
       - run: make check
       - run: make fuzz
       - run: make build
+      - run: make build-jobdb-provider
       - uses: actions/setup-node@v6
         with:
           node-version: '24'

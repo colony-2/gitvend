@@ -25,6 +25,8 @@ Agent running Git -- HTTPS + agent JWT --> gitvend -- HTTPS + upstream token -->
 
 An operation must pass all configured checks: the provider's allowed owners, the signing key's allowed owners, the JWT's grants, gateway-wide deny rules, and the upstream account's permissions. A JWT cannot grant access outside these limits. Give agents their JWT; retain the upstream token on the gateway and the private signing key with the trusted issuer.
 
+For JobDB workers, the [Gitvend secret-provider plugin](plugins/jobdb/README.md) issues lease-bound tenant read tokens and target-cell write tokens on demand. Build it with `make build-jobdb-provider`; configure tenant read patterns and a cell repository write allow-list in its issuer file.
+
 Read permissions hide ungranted ref names; they do **not** isolate Git objects by branch. An agent with any read grant for a repository may fetch objects by known hash, subject to what the upstream serves. Use separate repositories when you need object confidentiality.
 
 ## Install
