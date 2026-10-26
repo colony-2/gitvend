@@ -1,4 +1,4 @@
-package main
+package jobdbprovider
 
 import (
 	"context"
@@ -19,7 +19,7 @@ func TestExecutableJobDBHandshake(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "jobdb-gitvend-secret-provider")
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	if out, err := exec.CommandContext(ctx, "go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, "go", "build", "-o", binary, "github.com/colony-2/gitvend/cmd/jobdb-gitvend-secret-provider").CombinedOutput(); err != nil {
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
 	process, err := secretplugin.Start(ctx, secretplugin.ProcessConfig{Command: binary, Args: []string{"--config", configPath}})
@@ -42,7 +42,7 @@ func TestExecutableJobDBHandshake(t *testing.T) {
 	if len(out.Secrets) != 2 {
 		t.Fatalf("got %d secrets over plugin transport", len(out.Secrets))
 	}
-	for _, name := range []string{readSecret, cellSecret} {
+	for _, name := range []string{ReadSecretName, CellSecretName} {
 		id := verify(t, verifier, out.Secrets[name])
 		if id.Expiry.After(request.Lease.AuthorizedNotAfter) {
 			t.Fatal("plugin token exceeds presenting lease authority")
@@ -63,8 +63,8 @@ func TestExecutableJobDBHandshake(t *testing.T) {
 		if err != nil || len(out.Secrets) != 2 {
 			t.Fatalf("resolution during plugin reload: %v", err)
 		}
-		read := verify(t, verifier, out.Secrets[readSecret])
-		cell := verify(t, verifier, out.Secrets[cellSecret])
+		read := verify(t, verifier, out.Secrets[ReadSecretName])
+		cell := verify(t, verifier, out.Secrets[CellSecretName])
 		if read.Claims.PolicyRevision != cell.Claims.PolicyRevision {
 			t.Fatal("plugin response mixed policy revisions")
 		}

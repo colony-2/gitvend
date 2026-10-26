@@ -1,4 +1,4 @@
-package main
+package jobdbprovider
 
 import (
 	"crypto/ed25519"
@@ -40,7 +40,8 @@ type tenantPolicy struct {
 	principals map[string]bool
 }
 
-type provider struct {
+// Provider is an immutable, concurrent-safe issuer created by Load.
+type Provider struct {
 	config  config
 	key     ed25519.PrivateKey
 	tenants map[string]tenantPolicy
@@ -52,7 +53,11 @@ func defaults() config {
 		GatewayLeewaySeconds: 30, ClockMarginSeconds: 1, CellMetadataField: "repo"}
 }
 
-func load(path string) (*provider, error) {
+// Load reads and validates an issuer configuration and its Ed25519 signing key.
+// Relative key paths resolve from the configuration file's directory.
+// Returned errors may include file or configuration details; do not expose them
+// to secret-resolution callers or log them without redaction.
+func Load(path string) (*Provider, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -82,7 +87,7 @@ func load(path string) (*provider, error) {
 	return newProvider(c, key, time.Now)
 }
 
-func newProvider(c config, key ed25519.PrivateKey, now func() time.Time) (*provider, error) {
+func newProvider(c config, key ed25519.PrivateKey, now func() time.Time) (*Provider, error) {
 	if c.Issuer == "" || c.Audience == "" || c.KeyID == "" || len(c.KeyID) > 128 ||
 		c.CellMetadataField == "" || len(c.Tenants) == 0 || len(key) != ed25519.PrivateKeySize || now == nil {
 		return nil, fmt.Errorf("issuer, audience, key, metadata field and tenants required")
@@ -91,7 +96,7 @@ func newProvider(c config, key ed25519.PrivateKey, now func() time.Time) (*provi
 		c.GatewayLeewaySeconds < 0 || c.GatewayLeewaySeconds > 30 || c.ClockMarginSeconds < 0 || c.ClockMarginSeconds > 3600 {
 		return nil, fmt.Errorf("invalid token limits")
 	}
-	p := &provider{config: c, key: append(ed25519.PrivateKey(nil), key...), tenants: map[string]tenantPolicy{}, now: now}
+	p := &Provider{config: c, key: append(ed25519.PrivateKey(nil), key...), tenants: map[string]tenantPolicy{}, now: now}
 	// Compile and copy policy once. Calls never retain caller-owned maps or slices.
 	p.config.Tenants = nil
 	for id, t := range c.Tenants {

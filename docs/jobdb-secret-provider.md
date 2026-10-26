@@ -23,10 +23,11 @@ still apply. A read-only request does not need cell metadata.
 From the Gitvend checkout:
 
 ```sh
-make build build-jobdb-provider
+make build
 mkdir -p .dev-secrets
 bin/gitvend keygen -private .dev-secrets/signing.key -public .dev-secrets/signing.pub
-cp plugins/jobdb/issuer.example.json .dev-secrets/gitvend-issuer.json
+cp examples/jobdb-gitvend-issuer.json .dev-secrets/gitvend-issuer.json
+bin/jobdb-gitvend-secret-provider --help
 ```
 
 Edit the issuer file for your tenant names and permitted cell repositories.
@@ -35,6 +36,24 @@ keep it in the provider process; configure Gitvend with the public key. The
 issuer, audience and key ID must match Gitvend's trusted-key configuration.
 The gateway's key owner ceiling and upstream owner routes must cover the intended
 repositories. Configure its upstream GitHub credential separately as usual.
+
+The command uses Cobra, with setup instructions available through `--help` or
+`help`. Running it without arguments also shows help. Validate your configuration
+and key without starting a plugin or watcher:
+
+```sh
+bin/jobdb-gitvend-secret-provider validate --config .dev-secrets/gitvend-issuer.json
+```
+
+JobDB still launches the executable as `jobdb-gitvend-secret-provider --config
+/absolute/path/to/issuer.json`. The command also supports `version`, `--version`,
+and Cobra's shell completion commands. Install the executable directly with Go:
+
+```sh
+go install github.com/colony-2/gitvend/cmd/jobdb-gitvend-secret-provider@latest
+```
+
+Use a revision containing this command when installing an unreleased change.
 
 Example policy for more restricted reads:
 
@@ -197,7 +216,13 @@ make check-jobdb-provider
 Tests verify grants and effective expiry with Gitvend's actual verifier, tenant
 and principal checks, metadata injection rejection, concurrent reloads, key
 rotation, invalid-file recovery, and the built executable's real JobDB plugin
-handshake and live reload. The separate Go module keeps the JobDB
-SDK dependencies out of the gateway module. Build this plugin from the checkout;
-its local Gitvend module replacement intentionally uses the same signing and
-permission implementation as that checkout's gateway.
+handshake and live reload. The executable lives in
+`cmd/jobdb-gitvend-secret-provider`, with Cobra commands in its `internal/cmd`
+package. Credential issuance and reloads live in the reusable `pkg/jobdbprovider`
+package. `Load` creates a fixed provider; `WatchConfig` creates a reloadable one
+that must be closed when finished. Both implement `jobdb.SecretProvider`.
+
+The plugin shares the root Go module and Gitvend signing implementation.
+`go test ./...`, `go vet ./...`, and `make check` include it automatically.
+`make build` builds both executables; `make build-jobdb-provider` builds only
+the plugin. The gateway executable does not import the JobDB provider package.

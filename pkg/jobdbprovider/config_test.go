@@ -1,4 +1,4 @@
-package main
+package jobdbprovider
 
 import (
 	"crypto/x509"
@@ -12,7 +12,7 @@ import (
 	"github.com/colony-2/jobdb/pkg/jobdb"
 )
 
-func writeConfig(t *testing.T, p *provider) string {
+func writeConfig(t *testing.T, p *Provider) string {
 	t.Helper()
 	dir := t.TempDir()
 	der, err := x509.MarshalPKCS8PrivateKey(p.key)
@@ -38,7 +38,7 @@ func writeConfig(t *testing.T, p *provider) string {
 func TestLoadAndConfigurationValidation(t *testing.T) {
 	p, _, _ := testProvider(t)
 	path := writeConfig(t, p)
-	if _, err := load(path); err != nil {
+	if _, err := Load(path); err != nil {
 		t.Fatal(err)
 	}
 	for _, mutate := range []func(*config){
@@ -77,7 +77,7 @@ func TestLoadAndConfigurationValidation(t *testing.T) {
 		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := load(path); err == nil {
+		if _, err := Load(path); err == nil {
 			t.Fatal("invalid configuration file accepted")
 		}
 	}
@@ -99,7 +99,7 @@ func TestCustomMetadataFieldAndReadDenies(t *testing.T) {
 	c.Tenants["alpha"].ReadPermissions[1] = "github.com/*:rw"
 	r.AppMetadata = json.RawMessage(`{"target_cell":"github.com/acme/alpha-one"}`)
 	out := resolve(t, p, r)
-	cell := verify(t, v, out.Secrets[cellSecret])
+	cell := verify(t, v, out.Secrets[CellSecretName])
 	repo, ok := cellRepository(r.AppMetadata, "target_cell")
 	if !ok || cell.Policy.Read(repo) || cell.Policy.Write(repo, "refs/heads/main", "ref.update") {
 		t.Fatal("cell grant overrode tenant deny")

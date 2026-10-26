@@ -11,10 +11,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
-          go-version-file: plugins/jobdb/go.mod
-          cache-dependency-path: |
-            go.sum
-            plugins/jobdb/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
       - run: make check-jobdb-provider
   compose:
     runs-on: ubuntu-latest
@@ -34,13 +32,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: |
-            go.sum
-            plugins/jobdb/go.sum
+          cache-dependency-path: go.sum
       - run: make check
       - run: make fuzz
       - run: make build
-      - run: make build-jobdb-provider
       - uses: actions/setup-node@v6
         with:
           node-version: '24'

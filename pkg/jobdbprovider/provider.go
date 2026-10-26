@@ -1,4 +1,4 @@
-package main
+package jobdbprovider
 
 import (
 	"context"
@@ -19,13 +19,15 @@ import (
 )
 
 const (
-	readSecret = "gitvend_read_token"
-	cellSecret = "gitvend_cell_token"
+	// ReadSecretName requests the configured tenant read permissions.
+	ReadSecretName = "gitvend_read_token"
+	// CellSecretName requests tenant reads plus writes to the authorized target cell.
+	CellSecretName = "gitvend_cell_token"
 )
 
-var _ jobdb.SecretProvider = (*provider)(nil)
+var _ jobdb.SecretProvider = (*Provider)(nil)
 
-func (p *provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequest) (jobdb.SecretResolveResult, error) {
+func (p *Provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequest) (jobdb.SecretResolveResult, error) {
 	out := jobdb.SecretResolveResult{Secrets: map[string]jobdb.SecretValue{}}
 	if err := ctx.Err(); err != nil {
 		return jobdb.SecretResolveResult{}, err
@@ -38,14 +40,14 @@ func (p *provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequ
 		if err := ctx.Err(); err != nil {
 			return jobdb.SecretResolveResult{}, err
 		}
-		if name != readSecret && name != cellSecret {
+		if name != ReadSecretName && name != CellSecretName {
 			continue
 		}
 		if _, issued := out.Secrets[name]; issued {
 			continue
 		}
 		permissions := append([]string(nil), t.reads...)
-		if name == cellSecret {
+		if name == CellSecretName {
 			repo, ok := cellRepository(r.AppMetadata, p.config.CellMetadataField)
 			if !ok || t.writes == nil || !t.writes.Read(repo) {
 				continue
@@ -69,7 +71,7 @@ func (p *provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequ
 	return out, nil
 }
 
-func (p *provider) issue(r jobdb.SecretResolveRequest, permissions []string) (jobdb.SecretValue, error) {
+func (p *Provider) issue(r jobdb.SecretResolveRequest, permissions []string) (jobdb.SecretValue, error) {
 	now := p.now().UTC()
 	issuedAt := now.Truncate(time.Second)
 	deadline := r.Lease.AuthorizedNotAfter

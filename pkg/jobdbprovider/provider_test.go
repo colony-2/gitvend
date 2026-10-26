@@ -1,4 +1,4 @@
-package main
+package jobdbprovider
 
 import (
 	"context"
@@ -25,7 +25,7 @@ func testConfig() config {
 	return c
 }
 
-func testProvider(t *testing.T) (*provider, *auth.Verifier, jobdb.SecretResolveRequest) {
+func testProvider(t *testing.T) (*Provider, *auth.Verifier, jobdb.SecretResolveRequest) {
 	t.Helper()
 	now := time.Date(2026, 10, 23, 12, 0, 0, 999999999, time.UTC)
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
@@ -38,13 +38,13 @@ func testProvider(t *testing.T) (*provider, *auth.Verifier, jobdb.SecretResolveR
 	}
 	v := &auth.Verifier{Audience: "gitvend", MaxBytes: 4096, MaxLifetime: 15 * time.Minute, Leeway: 30 * time.Second,
 		Now: func() time.Time { return now }, Keys: map[string]auth.Key{"jobdb-key": {Issuer: "jobdb", Public: pub, Owners: map[string][]string{"github.com": {"*"}}}}}
-	r := jobdb.SecretResolveRequest{TenantID: "alpha", JobID: "job-1", Names: []string{readSecret, cellSecret, "unrelated"},
+	r := jobdb.SecretResolveRequest{TenantID: "alpha", JobID: "job-1", Names: []string{ReadSecretName, CellSecretName, "unrelated"},
 		AppMetadata: json.RawMessage(`{"cell_id":"123","cell_name":"alpha-one","repo":"https://github.com/Acme/Alpha-one.git","git_ref":"main","v":1}`),
 		Lease:       jobdb.SecretLeaseContext{LeaseID: "lease-1", WorkerID: "worker-1", LeaseExpiresAt: now.Add(10 * time.Minute), AuthorizedNotAfter: now.Add(5 * time.Minute)}}
 	return p, v, r
 }
 
-func resolve(t *testing.T, p *provider, r jobdb.SecretResolveRequest) jobdb.SecretResolveResult {
+func resolve(t *testing.T, p *Provider, r jobdb.SecretResolveRequest) jobdb.SecretResolveResult {
 	t.Helper()
 	out, err := p.ResolveSecrets(context.Background(), r)
 	if err != nil {
@@ -71,8 +71,8 @@ func TestRequestedTokensEnforceReadAndExactCellGrants(t *testing.T) {
 	if len(out.Secrets) != 2 {
 		t.Fatalf("got %d secrets", len(out.Secrets))
 	}
-	read := verify(t, v, out.Secrets[readSecret])
-	cell := verify(t, v, out.Secrets[cellSecret])
+	read := verify(t, v, out.Secrets[ReadSecretName])
+	cell := verify(t, v, out.Secrets[CellSecretName])
 	for _, path := range []string{"acme/alpha-one", "acme/alpha-two", "acme/beta-one", "public/project"} {
 		repo := policy.Repository{Host: "github.com", Path: path, FoldCase: true}
 		for _, id := range []*auth.Identity{read, cell} {
@@ -91,8 +91,8 @@ func TestRequestedTokensEnforceReadAndExactCellGrants(t *testing.T) {
 		t.Fatal("token ID or policy revision not preserved")
 	}
 	// A read-only request needs no cell metadata and must never return a cell credential.
-	r.Names, r.AppMetadata = []string{readSecret}, nil
-	if out := resolve(t, p, r); len(out.Secrets) != 1 || out.Secrets[readSecret].Value == "" {
+	r.Names, r.AppMetadata = []string{ReadSecretName}, nil
+	if out := resolve(t, p, r); len(out.Secrets) != 1 || out.Secrets[ReadSecretName].Value == "" {
 		t.Fatal("read-only resolution failed")
 	}
 }
@@ -108,7 +108,7 @@ func TestTenantAndPrincipalAuthorization(t *testing.T) {
 	if len(out.Secrets) != 1 {
 		t.Fatal("cross-tenant cell authorized")
 	}
-	id := verify(t, v, out.Secrets[readSecret])
+	id := verify(t, v, out.Secrets[ReadSecretName])
 	if id.Policy.Read(policy.Repository{Host: "github.com", Path: "acme/alpha-one"}) {
 		t.Fatal("tenant read policy leaked")
 	}
@@ -150,7 +150,7 @@ func TestUntrustedCellMetadata(t *testing.T) {
 		t.Run(metadata, func(t *testing.T) {
 			r.AppMetadata = json.RawMessage(metadata)
 			out := resolve(t, p, r)
-			if len(out.Secrets) != 1 || out.Secrets[readSecret].Value == "" {
+			if len(out.Secrets) != 1 || out.Secrets[ReadSecretName].Value == "" {
 				t.Fatal("invalid cell should omit only the cell token")
 			}
 		})
@@ -159,15 +159,15 @@ func TestUntrustedCellMetadata(t *testing.T) {
 
 func TestLeaseExpiryIncludesVerifierLeewayAndRenewal(t *testing.T) {
 	p, v, r := testProvider(t)
-	r.Names = []string{readSecret}
-	old := resolve(t, p, r).Secrets[readSecret]
+	r.Names = []string{ReadSecretName}
+	old := resolve(t, p, r).Secrets[ReadSecretName]
 	id := verify(t, v, old)
 	if id.Expiry.After(r.Lease.AuthorizedNotAfter.Add(-time.Second)) {
 		t.Fatal("gateway acceptance extends past authority margin")
 	}
 	// Renewing the backend lease must not extend an old presenting capability.
 	r.Lease.LeaseExpiresAt = r.Lease.LeaseExpiresAt.Add(time.Hour)
-	if !resolve(t, p, r).Secrets[readSecret].ExpiresAt.Equal(*old.ExpiresAt) {
+	if !resolve(t, p, r).Secrets[ReadSecretName].ExpiresAt.Equal(*old.ExpiresAt) {
 		t.Fatal("backend renewal extended old capability")
 	}
 	deadline := r.Lease.AuthorizedNotAfter
@@ -176,7 +176,7 @@ func TestLeaseExpiryIncludesVerifierLeewayAndRenewal(t *testing.T) {
 		t.Fatal("JWT accepted at presenting authority deadline")
 	}
 	r.Lease.AuthorizedNotAfter = r.Lease.LeaseExpiresAt
-	newToken := resolve(t, p, r).Secrets[readSecret]
+	newToken := resolve(t, p, r).Secrets[ReadSecretName]
 	v.Now = p.now
 	newID := verify(t, v, newToken)
 	if !newToken.ExpiresAt.After(*old.ExpiresAt) || newID.Claims.ExpiresAt.Sub(newID.Claims.IssuedAt.Time) > 15*time.Minute {
@@ -184,7 +184,7 @@ func TestLeaseExpiryIncludesVerifierLeewayAndRenewal(t *testing.T) {
 	}
 	// The backend lease remains an independent ceiling even if the request is inconsistent.
 	r.Lease.LeaseExpiresAt = p.now().Add(2 * time.Minute)
-	short := verify(t, v, resolve(t, p, r).Secrets[readSecret])
+	short := verify(t, v, resolve(t, p, r).Secrets[ReadSecretName])
 	if short.Expiry.After(r.Lease.LeaseExpiresAt) {
 		t.Fatal("backend lease ceiling ignored")
 	}
@@ -226,7 +226,7 @@ func TestMissingExpiredAndCanceledAuthority(t *testing.T) {
 
 func TestConcurrentFreshCredentialsAndOwnedResults(t *testing.T) {
 	p, v, r := testProvider(t)
-	r.Names = []string{readSecret, readSecret}
+	r.Names = []string{ReadSecretName, ReadSecretName}
 	var wg sync.WaitGroup
 	ids := make(chan string, 20)
 	for range 20 {
@@ -238,13 +238,13 @@ func TestConcurrentFreshCredentialsAndOwnedResults(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			id, err := v.Verify(out.Secrets[readSecret].Value)
+			id, err := v.Verify(out.Secrets[ReadSecretName].Value)
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			ids <- id.Claims.ID
-			delete(out.Secrets, readSecret)
+			delete(out.Secrets, ReadSecretName)
 		}()
 	}
 	wg.Wait()

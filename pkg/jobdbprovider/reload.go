@@ -1,4 +1,4 @@
-package main
+package jobdbprovider
 
 import (
 	"context"
@@ -17,10 +17,10 @@ const (
 	reloadRetry    = time.Second
 )
 
-// reloadingProvider publishes complete, immutable provider snapshots. Each
+// ReloadingProvider publishes complete, immutable provider snapshots. Each
 // request captures one snapshot, including its signing key, for both tokens.
-type reloadingProvider struct {
-	current atomic.Pointer[provider]
+type ReloadingProvider struct {
+	current atomic.Pointer[Provider]
 	path    string
 	watcher *fsnotify.Watcher
 	report  func(string)
@@ -29,9 +29,13 @@ type reloadingProvider struct {
 	once    sync.Once
 }
 
-var _ jobdb.SecretProvider = (*reloadingProvider)(nil)
+var _ jobdb.SecretProvider = (*ReloadingProvider)(nil)
 
-func watchConfig(path string, report func(string)) (*reloadingProvider, error) {
+// WatchConfig loads the initial configuration and starts watching it and its key.
+// report receives fixed diagnostic messages on the watcher goroutine; it may be
+// nil and must not block or call Close. Call Close to release watcher resources.
+// Initial load errors may include configuration details and need redaction.
+func WatchConfig(path string, report func(string)) (*ReloadingProvider, error) {
 	if path == "" {
 		return nil, fmt.Errorf("configuration file required")
 	}
@@ -46,7 +50,7 @@ func watchConfig(path string, report func(string)) (*reloadingProvider, error) {
 	if report == nil {
 		report = func(string) {}
 	}
-	r := &reloadingProvider{path: path, watcher: w, report: report, stop: make(chan struct{}), done: make(chan struct{})}
+	r := &ReloadingProvider{path: path, watcher: w, report: report, stop: make(chan struct{}), done: make(chan struct{})}
 	if err := r.reload(); err != nil {
 		w.Close()
 		return nil, err
@@ -55,16 +59,17 @@ func watchConfig(path string, report func(string)) (*reloadingProvider, error) {
 	return r, nil
 }
 
-func (r *reloadingProvider) ResolveSecrets(ctx context.Context, request jobdb.SecretResolveRequest) (jobdb.SecretResolveResult, error) {
+func (r *ReloadingProvider) ResolveSecrets(ctx context.Context, request jobdb.SecretResolveRequest) (jobdb.SecretResolveResult, error) {
 	return r.current.Load().ResolveSecrets(ctx, request)
 }
 
-func (r *reloadingProvider) Close() {
+// Close stops the watcher and waits for it to exit. It is safe to call repeatedly.
+func (r *ReloadingProvider) Close() {
 	r.once.Do(func() { close(r.stop) })
 	<-r.done
 }
 
-func signingKeyPath(path string, p *provider) string {
+func signingKeyPath(path string, p *Provider) string {
 	key := p.config.SigningKeyFile
 	if !filepath.IsAbs(key) {
 		key = filepath.Join(filepath.Dir(path), key)
@@ -75,12 +80,12 @@ func signingKeyPath(path string, p *provider) string {
 // reload runs only during initialization or on the watcher goroutine. Watch
 // directories so atomic file replacements do not detach the watch. Re-adding
 // them also restores watches after a directory has been removed and recreated.
-func (r *reloadingProvider) reload() error {
+func (r *ReloadingProvider) reload() error {
 	configDir := filepath.Dir(r.path)
 	if err := r.watcher.Add(configDir); err != nil {
 		return err
 	}
-	next, err := load(r.path)
+	next, err := Load(r.path)
 	if err != nil {
 		return err
 	}
@@ -91,7 +96,7 @@ func (r *reloadingProvider) reload() error {
 	}
 	// Read again after installing the key watch to cover changes during startup
 	// or a switch to a key in a different directory.
-	next, err = load(r.path)
+	next, err = Load(r.path)
 	if err != nil {
 		return err
 	}
@@ -108,7 +113,7 @@ func (r *reloadingProvider) reload() error {
 	return nil
 }
 
-func (r *reloadingProvider) relevant(event fsnotify.Event) bool {
+func (r *ReloadingProvider) relevant(event fsnotify.Event) bool {
 	if !event.Has(fsnotify.Write | fsnotify.Create | fsnotify.Remove | fsnotify.Rename | fsnotify.Chmod) {
 		return false
 	}
@@ -117,7 +122,7 @@ func (r *reloadingProvider) relevant(event fsnotify.Event) bool {
 	return name == r.path || name == key || name == filepath.Dir(r.path) || name == filepath.Dir(key)
 }
 
-func (r *reloadingProvider) watch() {
+func (r *ReloadingProvider) watch() {
 	defer close(r.done)
 	defer r.watcher.Close()
 	var timer *time.Timer

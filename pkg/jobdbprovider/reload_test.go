@@ -1,4 +1,4 @@
-package main
+package jobdbprovider
 
 import (
 	"bytes"
@@ -63,12 +63,12 @@ func replaceConfig(t *testing.T, path string, c config) {
 	replaceFile(t, path, b)
 }
 
-func watchFixture(t *testing.T) (*reloadingProvider, *auth.Verifier, jobdb.SecretResolveRequest, chan string) {
+func watchFixture(t *testing.T) (*ReloadingProvider, *auth.Verifier, jobdb.SecretResolveRequest, chan string) {
 	t.Helper()
 	p, v, request := testProvider(t)
 	path := writeConfig(t, p)
 	logs := make(chan string, 128)
-	r, err := watchConfig(path, func(message string) { logs <- message })
+	r, err := WatchConfig(path, func(message string) { logs <- message })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestReloadWritesAndAtomicReplacementsRemoveTenantAccess(t *testing.T) {
 	if err != nil || len(out.Secrets) != 1 {
 		t.Fatal("removed cell write permission retained authorization")
 	}
-	id := verify(t, v, out.Secrets[readSecret])
+	id := verify(t, v, out.Secrets[ReadSecretName])
 	if id.Policy.Read(policy.Repository{Host: "github.com", Path: "acme/alpha-one"}) ||
 		!id.Policy.Read(policy.Repository{Host: "github.com", Path: "acme/shared"}) {
 		t.Fatal("read permissions were merged instead of replaced")
@@ -163,7 +163,7 @@ func TestInvalidReloadRetainsSnapshotAndRecovers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			verify(t, v, out.Secrets[readSecret])
+			verify(t, v, out.Secrets[ReadSecretName])
 			replaceFile(t, path, original)
 			eventually(t, func() bool { return r.current.Load() != before })
 		})
@@ -209,7 +209,7 @@ func TestReloadRetriesMissingNewKeyAndWatchesNewDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	verify(t, v, out.Secrets[readSecret])
+	verify(t, v, out.Secrets[ReadSecretName])
 }
 
 func replaceSigningKey(t *testing.T, path string) ed25519.PublicKey {
@@ -272,7 +272,7 @@ func TestRequestUsesSingleSnapshotAcrossSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &reloadingProvider{}
+	r := &ReloadingProvider{}
 	r.current.Store(old)
 	result := make(chan jobdb.SecretResolveResult, 1)
 	errors := make(chan error, 1)
@@ -324,12 +324,12 @@ func TestConcurrentRequestsDuringFileReload(t *testing.T) {
 					t.Errorf("resolution failed during reload: %v", err)
 					return
 				}
-				read, err := v.Verify(out.Secrets[readSecret].Value)
+				read, err := v.Verify(out.Secrets[ReadSecretName].Value)
 				if err != nil {
 					t.Error(err)
 					return
 				}
-				cell, err := v.Verify(out.Secrets[cellSecret].Value)
+				cell, err := v.Verify(out.Secrets[CellSecretName].Value)
 				if err != nil || cell.Claims.PolicyRevision != read.Claims.PolicyRevision {
 					t.Error("mixed or invalid credentials during reload")
 					return
@@ -347,10 +347,10 @@ func TestConcurrentRequestsDuringFileReload(t *testing.T) {
 }
 
 func TestWatcherStartupAndClose(t *testing.T) {
-	if _, err := watchConfig("", nil); err == nil {
+	if _, err := WatchConfig("", nil); err == nil {
 		t.Fatal("empty configuration path accepted")
 	}
-	if _, err := watchConfig(filepath.Join(t.TempDir(), "missing.json"), nil); err == nil {
+	if _, err := WatchConfig(filepath.Join(t.TempDir(), "missing.json"), nil); err == nil {
 		t.Fatal("missing initial configuration accepted")
 	}
 	r, _, _, _ := watchFixture(t)
