@@ -35,22 +35,22 @@ func newRootCmd(version string) *cobra.Command {
 				return cmd.Help()
 			}
 			if path == "" {
-				return fmt.Errorf("--config requires an issuer JSON file; use --help for setup instructions")
+				return fmt.Errorf("--config requires an issuer YAML file; use --help for setup instructions")
 			}
 			p, err := jobdbprovider.WatchConfig(path, func(message string) {
 				fmt.Fprintln(cmd.ErrOrStderr(), commandName+":", message)
 			})
 			if err != nil {
-				// Config parsing errors can contain credentials or arbitrary JSON.
-				return fmt.Errorf("provider initialization failed; check the issuer JSON, signing key, and directory watch access; use --help for setup instructions")
+				// Config parsing errors can contain credentials or arbitrary configuration.
+				return fmt.Errorf("provider initialization failed; check the issuer YAML, signing key, and directory watch access; use --help for setup instructions")
 			}
 			defer p.Close()
 			secretplugin.Serve(p)
 			return nil
 		},
 	}
-	root.Flags().StringVarP(&path, "config", "c", "", "Issuer JSON file to serve (required when launched by JobDB; signing-key paths are relative to this file)")
-	_ = root.MarkFlagFilename("config", "json")
+	root.Flags().StringVarP(&path, "config", "c", "", "Issuer YAML file to serve (required when launched by JobDB; signing-key paths are relative to this file)")
+	_ = root.MarkFlagFilename("config", "yaml", "yml")
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -69,25 +69,25 @@ func newValidateCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate issuer configuration and signing key without starting the plugin",
-		Long: `Check the issuer JSON, tenant permission rules, token limits, and Ed25519
+		Long: `Check the issuer YAML, tenant permission rules, token limits, and Ed25519
 private key. Relative signing-key paths resolve from the issuer file's directory.
 This does not start a file watcher, contact GitHub, or connect to a Gitvend gateway.
 Run jobdb-gitvend-secret-provider --help for the complete setup instructions.`,
-		Example: "  jobdb-gitvend-secret-provider validate --config /absolute/path/gitvend-issuer.json",
+		Example: "  jobdb-gitvend-secret-provider validate --config /absolute/path/gitvend-issuer.yaml",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if path == "" {
-				return fmt.Errorf("--config requires an issuer JSON file")
+				return fmt.Errorf("--config requires an issuer YAML file")
 			}
 			if _, err := jobdbprovider.Load(path); err != nil {
-				return fmt.Errorf("configuration validation failed; check the issuer JSON, tenant permissions, token limits, and signing key")
+				return fmt.Errorf("configuration validation failed; check the issuer YAML, tenant permissions, token limits, and signing key")
 			}
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), "Configuration and signing key are valid.")
 			return err
 		},
 	}
-	command.Flags().StringVarP(&path, "config", "c", "", "Issuer JSON file to validate")
+	command.Flags().StringVarP(&path, "config", "c", "", "Issuer YAML file to validate")
 	_ = command.MarkFlagRequired("config")
-	_ = command.MarkFlagFilename("config", "json")
+	_ = command.MarkFlagFilename("config", "yaml", "yml")
 	return command
 }

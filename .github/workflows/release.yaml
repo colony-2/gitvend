@@ -23,6 +23,7 @@ env:
   PROJECT_NAME: gitvend
   BINARY_NAME: gitvend
   GO_MAIN_PACKAGE: ./cmd/gitvend
+  PLUGIN_BINARY: jobdb-gitvend-secret-provider
   NPM_PACKAGE_DIR: npm/gitvend
   NPM_SCOPE: '@colony2'
   NPM_DESCRIPTION: Git HTTPS gateway with signed repository and branch permissions
@@ -160,7 +161,11 @@ jobs:
               -o "${out_dir}/${BINARY_NAME}" \
               "${GO_MAIN_PACKAGE}"
 
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -buildvcs=false -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "${out_dir}/${PLUGIN_BINARY}" "./cmd/${PLUGIN_BINARY}"
             test -s "${out_dir}/${BINARY_NAME}"
+            test -s "${out_dir}/${PLUGIN_BINARY}"
             printf '%s %s %s %s\n' "$goos" "$goarch" "$os_name" "$arch_name" >> dist/targets.txt
           done
 
@@ -215,10 +220,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          for binary in dist/build/darwin-*/"${BINARY_NAME}"; do
+          for binary in dist/build/darwin-*/"${BINARY_NAME}" dist/build/darwin-*/"${PLUGIN_BINARY}"; do
             target="$(basename "$(dirname "$binary")")"
             echo "Signing and notarizing $target"
-            QUILL_LOG_FILE="${RUNNER_TEMP}/quill-${target}.log" quill sign-and-notarize "$binary" -vv
+            QUILL_LOG_FILE="${RUNNER_TEMP}/quill-${target}-$(basename "$binary").log" quill sign-and-notarize "$binary" -vv
           done
 
       - name: Package release archives
@@ -235,10 +240,13 @@ jobs:
             rm -rf "$staged"
             mkdir -p "$staged"
             cp "dist/build/${goos}-${goarch}/${BINARY_NAME}" "$staged/${BINARY_NAME}"
-            cp README.md THIRD_PARTY_NOTICES.md "$staged/"
+            cp "dist/build/${goos}-${goarch}/${PLUGIN_BINARY}" "$staged/${PLUGIN_BINARY}"
+            cp README.md THIRD_PARTY_NOTICES.md compose.yaml compose.config.yaml "$staged/"
+            mkdir -p "$staged/deploy"
+            cp deploy/gitvend.default.yaml "$staged/deploy/"
             cp -R LICENSES examples "$staged/"
 
-            tar_entries=("${BINARY_NAME}" "README.md" "THIRD_PARTY_NOTICES.md" "LICENSES" "examples")
+            tar_entries=("${BINARY_NAME}" "${PLUGIN_BINARY}" "README.md" "THIRD_PARTY_NOTICES.md" "LICENSES" "examples" "compose.yaml" "compose.config.yaml" "deploy")
             if [ -d docs ]; then
               cp -R docs "$staged/docs"
               tar_entries+=("docs")
@@ -278,12 +286,14 @@ jobs:
           extract_dir="$(mktemp -d)"
           tar -C "$extract_dir" -xzf "$archive"
 
-          got="$("$extract_dir/${BINARY_NAME}" version)"
-          want="${BINARY_NAME} version ${VERSION}"
-          if [ "$got" != "$want" ]; then
-            printf 'Unexpected version output:\n got: %s\nwant: %s\n' "$got" "$want" >&2
-            exit 1
-          fi
+          for binary in "$BINARY_NAME" "$PLUGIN_BINARY"; do
+            got="$("$extract_dir/$binary" version)"
+            want="$binary version ${VERSION}"
+            if [ "$got" != "$want" ]; then
+              printf 'Unexpected version output:\n got: %s\nwant: %s\n' "$got" "$want" >&2
+              exit 1
+            fi
+          done
 
       - name: Upload release assets
         uses: actions/upload-artifact@v7
@@ -391,6 +401,8 @@ jobs:
           cp ../../README.md README.md
           cp ../../THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.md
           cp -R ../../LICENSES LICENSES
+          cp -R ../../docs docs
+          cp -R ../../examples examples
 
           node <<'NODE'
           const fs = require("fs");
@@ -422,9 +434,15 @@ jobs:
           };
           pkg.bin = {
             [project]: "bin/cli.js",
+            [process.env.PLUGIN_BINARY]: "bin/jobdb-gitvend-secret-provider",
           };
 
           fs.writeFileSync("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
+          const readme = fs.readFileSync("README.md", "utf8").replace(
+            /\]\((docs\/[^)]+)\)/g,
+            (_, target) => `](https://github.com/${repo}/blob/${process.env.TAG}/${target})`
+          );
+          fs.writeFileSync("README.md", readme);
           NODE
 
           npm pkg get name version description homepage repository bugs author keywords engines bin
@@ -448,12 +466,14 @@ jobs:
           install_dir="$(mktemp -d)"
           npm install --prefix "$install_dir" "./${{ steps.pack.outputs.package_file }}"
 
-          got="$("$install_dir/node_modules/.bin/${PROJECT_NAME}" version)"
-          want="${PROJECT_NAME} version ${VERSION}"
-          if [ "$got" != "$want" ]; then
-            printf 'Unexpected npm-installed version output:\n got: %s\nwant: %s\n' "$got" "$want" >&2
-            exit 1
-          fi
+          for binary in "$PROJECT_NAME" "$PLUGIN_BINARY"; do
+            got="$("$install_dir/node_modules/.bin/$binary" version)"
+            want="$binary version ${VERSION}"
+            if [ "$got" != "$want" ]; then
+              printf 'Unexpected npm-installed version output:\n got: %s\nwant: %s\n' "$got" "$want" >&2
+              exit 1
+            fi
+          done
 
       - name: Publish npm package with token
         if: env.NPM_TOKEN != ''

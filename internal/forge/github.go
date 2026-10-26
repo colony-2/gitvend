@@ -14,8 +14,10 @@ import (
 )
 
 type Repository struct {
-	FullName string `json:"full_name"`
-	Private  bool   `json:"private"`
+	FullName                  string `json:"full_name"`
+	Private                   bool   `json:"private"`
+	HasPullRequests           *bool  `json:"has_pull_requests"`
+	PullRequestCreationPolicy string `json:"pull_request_creation_policy"`
 }
 type StatusError struct{ Status int }
 
@@ -28,6 +30,9 @@ type GitHub struct {
 }
 
 func New(p config.Provider) (*GitHub, error) {
+	if err := p.CreationDefaults.Validate(); err != nil {
+		return nil, err
+	}
 	token, e := config.Secret(p.Credential)
 	if e != nil {
 		return nil, e
@@ -77,11 +82,15 @@ func (g *GitHub) call(ctx context.Context, method, path string, body any) (Repos
 	if e != nil || len(b) > 1<<20 {
 		return Repository{}, fmt.Errorf("invalid forge response")
 	}
-	var repo Repository
-	if e = json.Unmarshal(b, &repo); e != nil || repo.FullName == "" {
-		return repo, fmt.Errorf("invalid forge repository metadata")
+	var response struct {
+		Repository
+		Private *bool `json:"private"`
 	}
-	return repo, nil
+	if e = json.Unmarshal(b, &response); e != nil || response.FullName == "" || response.Private == nil {
+		return Repository{}, fmt.Errorf("invalid forge repository metadata")
+	}
+	response.Repository.Private = *response.Private
+	return response.Repository, nil
 }
 func (g *GitHub) Lookup(ctx context.Context, path string) (Repository, error) {
 	r, e := g.call(ctx, "GET", "/repos/"+path, nil)
@@ -91,11 +100,54 @@ func (g *GitHub) Lookup(ctx context.Context, path string) (Repository, error) {
 	return r, e
 }
 func (g *GitHub) Create(ctx context.Context, owner, name string) (Repository, error) {
-	r, e := g.call(ctx, "POST", "/orgs/"+owner+"/repos", map[string]any{"name": name, "private": true, "auto_init": false})
-	if e == nil && (!r.Private || !strings.EqualFold(r.FullName, owner+"/"+name)) {
-		return r, fmt.Errorf("created repository does not match private profile")
+	// Use GitHub's native field names. PR availability is update-only and is
+	// applied by FinishCreation after creation (or reconciliation) is confirmed.
+	b, err := json.Marshal(g.Config.CreationDefaults)
+	if err != nil {
+		return Repository{}, err
+	}
+	var body map[string]any
+	if err := json.Unmarshal(b, &body); err != nil {
+		return Repository{}, err
+	}
+	delete(body, "visibility")
+	delete(body, "has_pull_requests")
+	delete(body, "pull_request_creation_policy")
+	body["name"], body["private"], body["auto_init"] = name, g.Config.CreationDefaults.Private(), false
+	r, e := g.call(ctx, "POST", "/orgs/"+owner+"/repos", body)
+	if e == nil && (r.Private != g.Config.CreationDefaults.Private() || !strings.EqualFold(r.FullName, owner+"/"+name)) {
+		return r, fmt.Errorf("created repository does not match creation profile")
 	}
 	return r, e
+}
+
+// FinishCreation applies update-only settings to a confirmed new repository.
+// It must not be called for repositories that existed before a create attempt.
+func (g *GitHub) FinishCreation(ctx context.Context, repo Repository) error {
+	c := g.Config.CreationDefaults
+	if repo.Private != c.Private() {
+		return fmt.Errorf("repository visibility does not match creation profile")
+	}
+	body := map[string]any{}
+	if c.HasPullRequests != nil {
+		body["has_pull_requests"] = *c.HasPullRequests
+	}
+	if c.PullRequestCreationPolicy != "" {
+		body["pull_request_creation_policy"] = c.PullRequestCreationPolicy
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	r, err := g.call(ctx, "PATCH", "/repos/"+repo.FullName, body)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(r.FullName, repo.FullName) || r.Private != c.Private() ||
+		c.HasPullRequests != nil && (r.HasPullRequests == nil || *r.HasPullRequests != *c.HasPullRequests) ||
+		c.PullRequestCreationPolicy != "" && r.PullRequestCreationPolicy != c.PullRequestCreationPolicy {
+		return fmt.Errorf("repository does not match requested pull request settings")
+	}
+	return nil
 }
 func (g *GitHub) Git(ctx context.Context, method, path, query, service, protocol string, body io.Reader) (*http.Response, error) {
 	r, e := http.NewRequestWithContext(ctx, method, strings.TrimRight(g.Config.GitBaseURL, "/")+"/"+path+".git/"+service, body)

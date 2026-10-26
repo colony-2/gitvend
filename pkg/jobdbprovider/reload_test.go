@@ -6,8 +6,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,7 +56,7 @@ func replaceFile(t *testing.T, path string, contents []byte) {
 
 func replaceConfig(t *testing.T, path string, c config) {
 	t.Helper()
-	b, err := json.Marshal(c)
+	b, err := yaml.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestReloadWritesAndAtomicReplacementsRemoveTenantAccess(t *testing.T) {
 	c := testConfig()
 	c.SigningKeyFile = "signing.key"
 	c.PolicyRevision = "direct-write"
-	b, err := json.Marshal(c)
+	b, err := yaml.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestReloadWritesAndAtomicReplacementsRemoveTenantAccess(t *testing.T) {
 			}
 		}
 	}
-	c.Tenants["alpha"] = tenantConfig{ReadPermissions: []string{"github.com/acme/shared:r"}}
+	c.Tenants["alpha"] = tenantConfig{BasePermissions: []string{"github.com/acme/shared:r"}}
 	c.PolicyRevision = "permissions-removed"
 	replaceConfig(t, r.path, c)
 	eventually(t, func() bool { return r.current.Load().config.PolicyRevision == c.PolicyRevision })
@@ -126,7 +126,7 @@ func TestReloadWritesAndAtomicReplacementsRemoveTenantAccess(t *testing.T) {
 	if err != nil || len(out.Secrets) != 1 {
 		t.Fatal("removed cell write permission retained authorization")
 	}
-	id := verify(t, v, out.Secrets[ReadSecretName])
+	id := verify(t, v, out.Secrets[BaseSecretName])
 	if id.Policy.Read(policy.Repository{Host: "github.com", Path: "acme/alpha-one"}) ||
 		!id.Policy.Read(policy.Repository{Host: "github.com", Path: "acme/shared"}) {
 		t.Fatal("read permissions were merged instead of replaced")
@@ -138,6 +138,40 @@ func TestReloadWritesAndAtomicReplacementsRemoveTenantAccess(t *testing.T) {
 	out, err = r.ResolveSecrets(t.Context(), request)
 	if err != nil || len(out.Secrets) != 0 {
 		t.Fatal("removed tenant retained authorization")
+	}
+}
+
+func TestReloadTargetCreationAndBranchRules(t *testing.T) {
+	r, v, request, _ := watchFixture(t)
+	c := testConfig()
+	c.SigningKeyFile, c.PolicyRevision = "signing.key", "target-creation"
+	c.Tenants["alpha"] = tenantConfig{
+		BasePermissions:   []string{"github.com/*:r"},
+		TargetPermissions: []string{"github.com/acme/*:c", "github.com/acme/*#work/*:rw"},
+	}
+	replaceConfig(t, r.path, c)
+	eventually(t, func() bool { return r.current.Load().config.PolicyRevision == c.PolicyRevision })
+	out, err := r.ResolveSecrets(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := verify(t, v, out.Secrets[CellSecretName])
+	repo := policy.Repository{Host: "github.com", Path: "acme/alpha-one"}
+	if !cell.Policy.Allows(repo, "", "repo.create") || !cell.Policy.Write(repo, "refs/heads/work/a", "ref.update") || cell.Policy.Write(repo, "refs/heads/main", "ref.update") {
+		t.Fatal("reloaded target policy lost actions or branch scope")
+	}
+	c.PolicyRevision = "creation-denied"
+	tenant := c.Tenants["alpha"]
+	tenant.TargetPermissions = append(tenant.TargetPermissions, "!github.com/acme/*:c")
+	c.Tenants["alpha"] = tenant
+	replaceConfig(t, r.path, c)
+	eventually(t, func() bool { return r.current.Load().config.PolicyRevision == c.PolicyRevision })
+	out, err = r.ResolveSecrets(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verify(t, v, out.Secrets[CellSecretName]).Policy.Allows(repo, "", "repo.create") {
+		t.Fatal("reloaded deny did not revoke creation in fresh tokens")
 	}
 }
 
@@ -163,7 +197,7 @@ func TestInvalidReloadRetainsSnapshotAndRecovers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			verify(t, v, out.Secrets[ReadSecretName])
+			verify(t, v, out.Secrets[BaseSecretName])
 			replaceFile(t, path, original)
 			eventually(t, func() bool { return r.current.Load() != before })
 		})
@@ -209,7 +243,7 @@ func TestReloadRetriesMissingNewKeyAndWatchesNewDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	verify(t, v, out.Secrets[ReadSecretName])
+	verify(t, v, out.Secrets[BaseSecretName])
 }
 
 func replaceSigningKey(t *testing.T, path string) ed25519.PublicKey {
@@ -243,7 +277,7 @@ func TestReloadAfterConfigDirectoryReplacement(t *testing.T) {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"issuer.json", "signing.key"} {
+	for _, name := range []string{"issuer.yaml", "signing.key"} {
 		data, err := os.ReadFile(filepath.Join(backup, name))
 		if err != nil {
 			t.Fatal(err)
@@ -324,7 +358,7 @@ func TestConcurrentRequestsDuringFileReload(t *testing.T) {
 					t.Errorf("resolution failed during reload: %v", err)
 					return
 				}
-				read, err := v.Verify(out.Secrets[ReadSecretName].Value)
+				read, err := v.Verify(out.Secrets[BaseSecretName].Value)
 				if err != nil {
 					t.Error(err)
 					return
@@ -350,7 +384,7 @@ func TestWatcherStartupAndClose(t *testing.T) {
 	if _, err := WatchConfig("", nil); err == nil {
 		t.Fatal("empty configuration path accepted")
 	}
-	if _, err := WatchConfig(filepath.Join(t.TempDir(), "missing.json"), nil); err == nil {
+	if _, err := WatchConfig(filepath.Join(t.TempDir(), "missing.yaml"), nil); err == nil {
 		t.Fatal("missing initial configuration accepted")
 	}
 	r, _, _, _ := watchFixture(t)

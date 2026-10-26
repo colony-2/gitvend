@@ -56,7 +56,7 @@ func (i *Identity) Access(repo policy.Repository) bool {
 	}
 	owner := repo.Path[:at]
 	for _, o := range owners {
-		if o == owner || repo.FoldCase && strings.EqualFold(o, owner) {
+		if o == "*" || o == owner || repo.FoldCase && strings.EqualFold(o, owner) {
 			return true
 		}
 	}

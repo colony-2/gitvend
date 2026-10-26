@@ -30,7 +30,7 @@ The JWT contains an array of strings, not a comma-separated string. Each string 
 | `r` | Read objects by hash in the matching repository and discover/resolve matching refs. A ref selector restricts discovery, not hash reads. |
 | `w` | Create or update matching refs, including history rewrites, subject to upstream restrictions. Does not delete refs or create repositories. |
 | `d` | Delete matching refs. Does not delete the repository. |
-| `c` | Create matching repositories using the route's server-controlled private creation profile. Does not itself grant reads or ref writes. |
+| `c` | Create matching repositories using the route's server-controlled creation defaults (private by default). Does not itself grant reads or ref writes. |
 
 Letters may be combined, such as `rw`, `rwd`, or `rwc`. Reject empty, duplicate or unknown action letters; issuers serialize in `rwdc` order. `w` and `d` do not imply `r`: a write also requires effective read/discovery permission on its destination, possibly from another rule. This permits a broad `:r` plus a narrow `:w` without repeating read grants. No separate force-push letter is claimed: distinguishing history rewrites from fast-forwards remains outside the initial streaming gate.
 
@@ -123,7 +123,7 @@ The following is the custom claim fragment; the full token also requires the ide
 }
 ```
 
-This can read main, discover/write the agent's branches, and provision matching scratch repositories. Creation uses the route's private profile. The `rc` rule also deliberately grants all-ref discovery in those scratch repositories; remove `r` there and put it only on selected branches if narrower discovery is desired.
+This can read main, discover/write the agent's branches, and provision matching scratch repositories. Creation uses the route's creation defaults, including visibility (private by default). The `rc` rule also deliberately grants all-ref discovery in those scratch repositories; remove `r` there and put it only on selected branches if narrower discovery is desired.
 
 ## Implementation and acceptance
 

@@ -99,7 +99,7 @@ func (s *Server) route(r *http.Request) (route, error) {
 	name = strings.ToLower(name)
 	allowed := false
 	for _, o := range g.Config.AllowedOwners {
-		if owner == o {
+		if o == "*" || owner == o {
 			allowed = true
 		}
 	}
@@ -459,10 +459,15 @@ func (s *Server) ensure(ctx context.Context, rt route, id *auth.Identity, create
 		event.Reason = "could not confirm repository creation"
 		return &httpError{503, "repository creation unconfirmed; retry normal push discovery"}
 	}
-	if !repo.Private {
+	if repo.Private != rt.provider.Config.CreationDefaults.Private() {
 		event.Outcome = "rejected"
-		event.Reason = "creation resolved to a non-private repository"
-		return &httpError{409, "created or concurrent repository violates private profile"}
+		event.Reason = "creation resolved to a repository with unexpected visibility"
+		return &httpError{409, "created or concurrent repository violates creation visibility"}
+	}
+	if err := rt.provider.FinishCreation(ctx, repo); err != nil {
+		event.Outcome = "configuration_failed"
+		event.Reason = "repository exists but creation settings could not be confirmed"
+		return &httpError{502, "repository created but configuration incomplete; check repository settings before retrying"}
 	}
 	if created {
 		event.Outcome = "created"

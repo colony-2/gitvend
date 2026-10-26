@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,11 +25,11 @@ func writeConfig(t *testing.T, p *Provider) string {
 	}
 	c := testConfig()
 	c.SigningKeyFile = "signing.key"
-	b, err := json.Marshal(c)
+	b, err := yaml.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "issuer.json")
+	path := filepath.Join(dir, "issuer.yaml")
 	if err := os.WriteFile(path, b, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -51,15 +52,15 @@ func TestLoadAndConfigurationValidation(t *testing.T) {
 		func(c *config) { c.GatewayLeewaySeconds = -1 },
 		func(c *config) { c.ClockMarginSeconds = -1 },
 		func(c *config) { c.Tenants = nil },
-		func(c *config) { c.Tenants["alpha"] = tenantConfig{ReadPermissions: []string{"github.com/*:rw"}} },
+		func(c *config) { c.Tenants["alpha"] = tenantConfig{BasePermissions: []string{"github.com/*:invalid"}} },
 		func(c *config) {
-			c.Tenants["alpha"] = tenantConfig{ReadPermissions: []string{"github.com/*:r"}, CellWriteRepositories: []string{"github.com/acme/*#main"}}
+			c.Tenants["alpha"] = tenantConfig{BasePermissions: []string{"github.com/*:r"}, TargetPermissions: []string{"github.com/acme/*#main"}}
 		},
 		func(c *config) {
-			c.Tenants["alpha"] = tenantConfig{ReadPermissions: []string{"github.com/*:r"}, CellWriteRepositories: []string{"!github.com/acme/*"}}
+			c.Tenants["alpha"] = tenantConfig{BasePermissions: []string{"github.com/*:r"}, TargetPermissions: []string{"!github.com/acme/*"}}
 		},
 		func(c *config) {
-			c.Tenants["alpha"] = tenantConfig{ReadPermissions: []string{"github.com/*:r"}, CellWriteRepositories: []string{"github.com/acme/*:rw"}}
+			c.Tenants["alpha"] = tenantConfig{BasePermissions: []string{"github.com/*:r"}, TargetPermissions: []string{"github.com/acme/*#main:rwc"}}
 		},
 	} {
 		c := testConfig()
@@ -88,15 +89,15 @@ func TestCustomMetadataFieldAndReadDenies(t *testing.T) {
 	c := testConfig()
 	c.CellMetadataField = "target_cell"
 	c.Tenants["alpha"] = tenantConfig{
-		ReadPermissions:       []string{"github.com/*:r", "!github.com/acme/alpha-one:r"},
-		CellWriteRepositories: []string{"github.com/acme/alpha-*"},
+		BasePermissions:   []string{"github.com/*:r", "!github.com/acme/alpha-one:r"},
+		TargetPermissions: []string{"github.com/acme/alpha-*:rw"},
 	}
 	p, err := newProvider(c, p.key, p.now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Changing source configuration after initialization must not change authority.
-	c.Tenants["alpha"].ReadPermissions[1] = "github.com/*:rw"
+	c.Tenants["alpha"].BasePermissions[1] = "github.com/*:rw"
 	r.AppMetadata = json.RawMessage(`{"target_cell":"github.com/acme/alpha-one"}`)
 	out := resolve(t, p, r)
 	cell := verify(t, v, out.Secrets[CellSecretName])

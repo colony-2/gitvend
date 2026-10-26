@@ -23,6 +23,7 @@ RUN apk add --no-cache ca-certificates \
     && chown -R 10001:10001 /var/lib/gitvend \
     && chmod 0700 /var/lib/gitvend/private /var/lib/gitvend/public
 COPY --from=build /out/gitvend /usr/local/bin/gitvend
+COPY deploy/gitvend.default.yaml /etc/gitvend/gitvend.yaml
 USER 10001:10001
 ENTRYPOINT ["gitvend"]
-CMD ["serve", "-config", "/etc/gitvend/gitvend.json"]
+CMD ["serve", "--config", "/etc/gitvend/gitvend.yaml"]

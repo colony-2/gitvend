@@ -24,7 +24,8 @@
     "security"
   ],
   "bin": {
-    "gitvend": "bin/cli.js"
+    "gitvend": "bin/cli.js",
+    "jobdb-gitvend-secret-provider": "bin/jobdb-gitvend-secret-provider"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
@@ -46,6 +47,8 @@
     "scripts/",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
-    "LICENSES/"
+    "LICENSES/",
+    "docs/",
+    "examples/"
   ]
 }

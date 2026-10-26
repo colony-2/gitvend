@@ -10,49 +10,50 @@ import (
 	"time"
 
 	"github.com/colony-2/gitvend/internal/auth"
-	"github.com/colony-2/gitvend/internal/jsonutil"
+	"github.com/colony-2/gitvend/internal/configutil"
 	"github.com/colony-2/gitvend/internal/policy"
 )
 
 type Credential struct {
-	Kind      string `json:"kind"`
-	SecretRef string `json:"secret_ref"`
+	Kind      string `json:"kind" yaml:"kind"`
+	SecretRef string `json:"secret_ref" yaml:"secret_ref"`
 }
 type Provider struct {
-	Alias         string      `json:"alias"`
-	Host          string      `json:"host"`
-	Kind          string      `json:"kind"`
-	GitBaseURL    string      `json:"git_base_url"`
-	APIBaseURL    string      `json:"api_base_url"`
-	AllowedOwners []string    `json:"allowed_owners"`
-	Credential    Credential  `json:"credential"`
-	APICredential *Credential `json:"api_credential,omitempty"`
-	AllowCreation bool        `json:"allow_creation"`
+	Alias            string           `json:"alias" yaml:"alias"`
+	Host             string           `json:"host" yaml:"host"`
+	Kind             string           `json:"kind" yaml:"kind"`
+	GitBaseURL       string           `json:"git_base_url" yaml:"git_base_url"`
+	APIBaseURL       string           `json:"api_base_url" yaml:"api_base_url"`
+	AllowedOwners    []string         `json:"allowed_owners" yaml:"allowed_owners"`
+	Credential       Credential       `json:"credential" yaml:"credential"`
+	APICredential    *Credential      `json:"api_credential,omitempty" yaml:"api_credential,omitempty"`
+	AllowCreation    bool             `json:"allow_creation" yaml:"allow_creation"`
+	CreationDefaults CreationDefaults `json:"creation_defaults,omitempty" yaml:"creation_defaults,omitempty"`
 }
 type SigningKey struct {
-	ID            string              `json:"id"`
-	Issuer        string              `json:"issuer"`
-	PublicKeyFile string              `json:"public_key_file"`
-	Owners        map[string][]string `json:"owners"`
+	ID            string              `json:"id" yaml:"id"`
+	Issuer        string              `json:"issuer" yaml:"issuer"`
+	PublicKeyFile string              `json:"public_key_file" yaml:"public_key_file"`
+	Owners        map[string][]string `json:"owners" yaml:"owners"`
 }
 type Config struct {
-	Listen                  string       `json:"listen"`
-	TLSCert                 string       `json:"tls_cert"`
-	TLSKey                  string       `json:"tls_key"`
-	AllowHTTP               bool         `json:"allow_http"`
-	AllowHTTPUpstream       bool         `json:"allow_http_upstream"`
-	Audience                string       `json:"audience"`
-	Revision                string       `json:"revision"`
-	Keys                    []SigningKey `json:"keys"`
-	Providers               []Provider   `json:"providers"`
-	Denies                  []string     `json:"denies"`
-	MaxTokenBytes           int          `json:"max_token_bytes"`
-	MaxTokenLifetimeSeconds int          `json:"max_token_lifetime_seconds"`
-	ClockSkewSeconds        int          `json:"clock_skew_seconds"`
-	MaxControlBytes         int64        `json:"max_control_bytes"`
-	MaxPackBytes            int64        `json:"max_pack_bytes"`
-	MaxConcurrent           int          `json:"max_concurrent"`
-	RequestTimeoutSeconds   int          `json:"request_timeout_seconds"`
+	Listen                  string       `json:"listen" yaml:"listen"`
+	TLSCert                 string       `json:"tls_cert" yaml:"tls_cert"`
+	TLSKey                  string       `json:"tls_key" yaml:"tls_key"`
+	AllowHTTP               bool         `json:"allow_http" yaml:"allow_http"`
+	AllowHTTPUpstream       bool         `json:"allow_http_upstream" yaml:"allow_http_upstream"`
+	Audience                string       `json:"audience" yaml:"audience"`
+	Revision                string       `json:"revision" yaml:"revision"`
+	Keys                    []SigningKey `json:"keys" yaml:"keys"`
+	Providers               []Provider   `json:"providers" yaml:"providers"`
+	Denies                  []string     `json:"denies" yaml:"denies"`
+	MaxTokenBytes           int          `json:"max_token_bytes" yaml:"max_token_bytes"`
+	MaxTokenLifetimeSeconds int          `json:"max_token_lifetime_seconds" yaml:"max_token_lifetime_seconds"`
+	ClockSkewSeconds        int          `json:"clock_skew_seconds" yaml:"clock_skew_seconds"`
+	MaxControlBytes         int64        `json:"max_control_bytes" yaml:"max_control_bytes"`
+	MaxPackBytes            int64        `json:"max_pack_bytes" yaml:"max_pack_bytes"`
+	MaxConcurrent           int          `json:"max_concurrent" yaml:"max_concurrent"`
+	RequestTimeoutSeconds   int          `json:"request_timeout_seconds" yaml:"request_timeout_seconds"`
 }
 
 func Defaults() Config {
@@ -74,7 +75,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config too large")
 	}
 	c := Defaults()
-	if e = jsonutil.Decode(b, &c); e != nil {
+	if e = configutil.Decode(b, &c); e != nil {
 		return c, e
 	}
 	return c, c.Validate()
@@ -94,7 +95,11 @@ func (c Config) Validate() error {
 	}
 	seen := map[string]bool{}
 	routes := map[string]bool{}
+	routedHosts := map[string]bool{}
 	for _, p := range c.Providers {
+		if err := p.CreationDefaults.Validate(); err != nil {
+			return err
+		}
 		if !aliasRE.MatchString(p.Alias) || seen[p.Alias] {
 			return fmt.Errorf("invalid or duplicate provider alias")
 		}
@@ -107,16 +112,17 @@ func (c Config) Validate() error {
 				return e
 			}
 		}
+		if e := validateOwners(p.AllowedOwners); e != nil {
+			return e
+		}
 		for _, owner := range p.AllowedOwners {
-			if !ValidName(owner) || owner != strings.ToLower(owner) {
-				return fmt.Errorf("owners must be canonical lowercase names")
-			}
 			route := p.Host + "/" + owner
-			if routes[route] {
+			if routes[route] || routes[p.Host+"/*"] || owner == "*" && routedHosts[p.Host] {
 				return fmt.Errorf("ambiguous provider owner route")
 			}
 			routes[route] = true
 		}
+		routedHosts[p.Host] = true
 		if _, e := Secret(p.Credential); e != nil {
 			return e
 		}
@@ -136,8 +142,11 @@ func (c Config) Validate() error {
 			if !policy.ValidHost(h) || len(owners) == 0 {
 				return fmt.Errorf("invalid issuer ceiling")
 			}
+			if e := validateOwners(owners); e != nil {
+				return e
+			}
 			for _, o := range owners {
-				if !routes[h+"/"+o] {
+				if !routes[h+"/"+o] && !routes[h+"/*"] {
 					return fmt.Errorf("issuer ceiling references an unconfigured owner")
 				}
 			}
@@ -157,6 +166,19 @@ func (c Config) Validate() error {
 	_, e := c.Verifier()
 	return e
 }
+
+func validateOwners(owners []string) error {
+	for _, owner := range owners {
+		if owner == "*" && len(owners) == 1 {
+			return nil
+		}
+		if !ValidName(owner) || owner != strings.ToLower(owner) {
+			return fmt.Errorf("owners must be canonical lowercase names or a single wildcard '*'")
+		}
+	}
+	return nil
+}
+
 func validURL(s string, allowHTTP bool) error {
 	u, e := url.Parse(s)
 	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || strings.Contains(u.Path, "..") {

@@ -5,11 +5,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"github.com/colony-2/gitvend/internal/auth"
 	"github.com/colony-2/gitvend/internal/config"
+	"gopkg.in/yaml.v3"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -44,10 +44,10 @@ func TestServeReloadAndShutdown(t *testing.T) {
 	c.AllowHTTPUpstream = true
 	c.Keys = []config.SigningKey{{ID: "key", Issuer: "issuer", PublicKeyFile: pubPath, Owners: map[string][]string{"github.com": {"org"}}}}
 	c.Providers = []config.Provider{{Alias: "gh", Host: "github.com", Kind: "github", GitBaseURL: up.URL, APIBaseURL: up.URL, AllowedOwners: []string{"org"}, Credential: config.Credential{Kind: "token", SecretRef: "file:" + secret}}}
-	path := filepath.Join(dir, "config.json")
+	path := filepath.Join(dir, "config.yaml")
 	save := func() {
 		t.Helper()
-		b, _ := json.Marshal(c)
+		b, _ := yaml.Marshal(c)
 		if e := writeAtomic(path, b); e != nil {
 			t.Fatal(e)
 		}
@@ -143,7 +143,7 @@ func TestServeReloadAndShutdown(t *testing.T) {
 	}
 }
 func TestCommandFailures(t *testing.T) {
-	for _, args := range [][]string{{}, {"unknown"}, {"audit"}, {"sign"}, {"sign", "-key", "missing", "-kid", "x", "-issuer", "i", "-subject", "s", "-permission", "github.com/*:r"}, {"explain", "-repo", "bad"}, {"explain", "-repo", "github.com/org/r", "-action", "bad", "-permission", "github.com/*:r"}, {"credential", "-host", "proxy.example", "get"}} {
+	for _, args := range [][]string{{"unknown"}, {"audit"}, {"sign"}, {"sign", "-key", "missing", "-kid", "x", "-issuer", "i", "-subject", "s", "-permission", "github.com/*:r"}, {"explain", "-repo", "bad"}, {"explain", "-repo", "github.com/org/r", "-action", "bad", "-permission", "github.com/*:r"}, {"credential", "-host", "proxy.example", "get"}} {
 		var b bytes.Buffer
 		if e := run(args, strings.NewReader(""), &b, &b); e == nil {
 			t.Fatal(fmt.Sprint(args))

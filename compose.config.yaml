@@ -1,0 +1,10 @@
+# Optional: use only when overriding the image's built-in configuration.
+services:
+  gateway:
+    volumes:
+      - type: bind
+        source: ${GITVEND_CONFIG:-./deploy/gitvend.yaml}
+        target: /etc/gitvend/gitvend.yaml
+        read_only: true
+        bind:
+          create_host_path: false

@@ -14,10 +14,10 @@ services:
     <<: *common
     command:
       - keygen
-      - -if-missing
-      - -private
+      - --if-missing
+      - --private
       - /var/lib/gitvend/private/signing.key
-      - -public
+      - --public
       - /var/lib/gitvend/public/signing.pub
     network_mode: none
     restart: "no"
@@ -34,15 +34,10 @@ services:
     stop_grace_period: 15s
     ports:
       - "127.0.0.1:${GITVEND_PORT:-8443}:8080"
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?Set GITHUB_TOKEN to a GitHub access token}
     volumes:
-      - type: bind
-        source: ${GITVEND_CONFIG:-./deploy/gitvend.json}
-        target: /etc/gitvend/gitvend.json
-        read_only: true
-        bind:
-          create_host_path: false
       - signing-public:/var/lib/gitvend/public:ro
-    secrets: [github_token]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -58,13 +53,13 @@ services:
     entrypoint:
       - gitvend
       - sign
-      - -key
+      - --key
       - /var/lib/gitvend/private/signing.key
-      - -kid
+      - --kid
       - compose-1
-      - -issuer
+      - --issuer
       - compose
-      - -audience
+      - --audience
       - gitvend
     command: ["-h"]
     volumes:
@@ -73,7 +68,3 @@ services:
 volumes:
   signing-private:
   signing-public:
-
-secrets:
-  github_token:
-    file: ${GITHUB_TOKEN_FILE:-./secrets/github_token}

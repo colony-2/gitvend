@@ -42,7 +42,7 @@ func TestExecutableJobDBHandshake(t *testing.T) {
 	if len(out.Secrets) != 2 {
 		t.Fatalf("got %d secrets over plugin transport", len(out.Secrets))
 	}
-	for _, name := range []string{ReadSecretName, CellSecretName} {
+	for _, name := range []string{BaseSecretName, CellSecretName} {
 		id := verify(t, verifier, out.Secrets[name])
 		if id.Expiry.After(request.Lease.AuthorizedNotAfter) {
 			t.Fatal("plugin token exceeds presenting lease authority")
@@ -63,7 +63,7 @@ func TestExecutableJobDBHandshake(t *testing.T) {
 		if err != nil || len(out.Secrets) != 2 {
 			t.Fatalf("resolution during plugin reload: %v", err)
 		}
-		read := verify(t, verifier, out.Secrets[ReadSecretName])
+		read := verify(t, verifier, out.Secrets[BaseSecretName])
 		cell := verify(t, verifier, out.Secrets[CellSecretName])
 		if read.Claims.PolicyRevision != cell.Claims.PolicyRevision {
 			t.Fatal("plugin response mixed policy revisions")

@@ -44,7 +44,8 @@ async function install({
   const { name, assetName, baseUrl } = releaseAsset(pkg, platform, arch);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
   const vendorDir = path.join(packageRoot, "vendor");
-  let stagedBinary;
+  const binaries = [name, "jobdb-gitvend-secret-provider"];
+  const staged = [];
   try {
     const archivePath = path.join(tempDir, assetName);
     const checksumsPath = path.join(tempDir, "checksums.txt");
@@ -53,17 +54,26 @@ async function install({
     await downloadFile(`${baseUrl}/${assetName}`, archivePath);
     await downloadFile(`${baseUrl}/checksums.txt`, checksumsPath, { maxBytes: 1024 * 1024 });
     verifyChecksum(archivePath, checksumsPath, assetName);
-    // Extract only the executable, not documentation or other archive entries.
-    execFileSync("tar", ["-xzf", archivePath, "-C", extractDir, name], { stdio: "pipe" });
-    const binary = path.join(extractDir, name);
-    if (!fs.lstatSync(binary).isFile()) throw new Error("Release binary must be a regular file");
+    // Extract and validate both commands before replacing either installed binary.
+    execFileSync("tar", ["-xzf", archivePath, "-C", extractDir, ...binaries], { stdio: "pipe" });
+    for (const name of binaries) {
+      if (!fs.lstatSync(path.join(extractDir, name)).isFile()) {
+        throw new Error("Release binary must be a regular file");
+      }
+    }
     fs.mkdirSync(vendorDir, { recursive: true });
-    stagedBinary = path.join(vendorDir, `.gitvend-${crypto.randomBytes(8).toString("hex")}`);
-    fs.copyFileSync(binary, stagedBinary, fs.constants.COPYFILE_EXCL);
-    fs.chmodSync(stagedBinary, 0o755);
-    fs.renameSync(stagedBinary, path.join(vendorDir, name));
+    for (const name of binaries) {
+      // Launch the plugin directly: JobDB restricts PATH and owns its process.
+      const destinationDir = name === "gitvend" ? vendorDir : path.join(packageRoot, "bin");
+      fs.mkdirSync(destinationDir, { recursive: true });
+      const temporary = path.join(destinationDir, `.${name}-${crypto.randomBytes(8).toString("hex")}`);
+      staged.push([temporary, path.join(destinationDir, name)]);
+      fs.copyFileSync(path.join(extractDir, name), temporary, fs.constants.COPYFILE_EXCL);
+      fs.chmodSync(temporary, 0o755);
+    }
+    for (const [temporary, destination] of staged) fs.renameSync(temporary, destination);
   } finally {
-    if (stagedBinary) fs.rmSync(stagedBinary, { force: true });
+    for (const [temporary] of staged) fs.rmSync(temporary, { force: true });
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }

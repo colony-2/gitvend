@@ -1,6 +1,6 @@
 # Git permission gateway: initial requirements and design
 
-Status: initial implementation available, 2026-09-23; this document also records longer-term design requirements. See [README](../README.md) for implemented scope, configuration and tests. Implementation language: Go. Initial upstream: GitHub organizations; other Git forges follow through adapters.
+Status: initial implementation available, 2026-09-23; this document also records longer-term design requirements. See the [gateway guide](gateway.md) for implemented scope and configuration, and the [developer guide](development.md) for tests. Implementation language: Go. Initial upstream: GitHub organizations; other Git forges follow through adapters.
 
 Build an HTTPS endpoint that agents use as their Git remote. The gateway authenticates each agent, applies repository and ref permissions, and forwards permitted operations using credentials held by the gateway. It also creates missing repositories when a separate creation grant permits it. GitHub remains the source of truth for objects and refs.
 
@@ -85,7 +85,7 @@ Illustrative signed grant fragment (identity, audience, lifetime and signature f
 }
 ```
 
-This exposes main and the agent's branches in platform, permits only its own branch writes, and allows creation of matching scratch repositories with broader read visibility there. Creation uses the route's server-controlled private profile; `c` alone grants no read or write access. Unsupported ref namespaces remain inaccessible. Tags require a matching explicit tag selector or a whole-repository grant.
+This exposes main and the agent's branches in platform, permits only its own branch writes, and allows creation of matching scratch repositories with broader read visibility there. Creation uses the route's server-controlled creation defaults (private by default); `c` alone grants no read or write access. Unsupported ref namespaces remain inaccessible. Tags require a matching explicit tag selector or a whole-repository grant.
 
 Repository grants follow canonical owner/repository names, including names deleted and later recreated. Do not enroll repositories or pin provider IDs. Validate and activate local policy/configuration revisions atomically.
 
@@ -254,9 +254,10 @@ Provisioning sequence:
 1. Authorize the repository and ref operation before contacting the upstream. Only push discovery with configuration-enabled creation and a `c` grant enters the creation path.
 2. Inspect the repository by name. An existing repository continues to Git discovery without changing its visibility. A failed lookup other than 404 fails the request. An opaque 404 may mean inaccessible; independent creation authority is required before attempting creation.
 3. For a missing repository, require a nonempty readable/writable branch overlap and recheck JWT expiry. Emit a creation admission event.
-4. Attempt one create with explicit private visibility and no initial commit. Clients cannot supply arbitrary templates, import URLs, visibility or credentials.
-5. If create fails or its response is ambiguous, look up the name again. Confirm canonical owner/name and private visibility before continuing. A conflict is never a reason to modify an existing repository's settings. There is no blind retry of the create POST.
-6. Emit `created` or `reconciled`, then request real Git discovery using transport credentials. Filter it by policy. Git transport failures remain failures; API success does not imply a successful push. Reauthorize the later push independently.
+4. Attempt one create with the provider's configured visibility (private by default), feature defaults and no initial commit. Clients cannot supply arbitrary templates, import URLs, visibility or credentials.
+5. If create fails or its response is ambiguous, look up the name again. Confirm canonical owner/name and configured visibility before continuing. Never change visibility during reconciliation. There is no blind retry of the create POST.
+6. Apply configured update-only pull request settings to the confirmed repository. Failure returns 502 with `configuration_failed`; an operator must inspect/finish settings before retrying because later initial lookups leave existing repositories unchanged.
+7. Emit `created` or `reconciled`, then request real Git discovery using transport credentials. Filter it by policy. Git transport failures remain failures; API success does not imply a successful push. Reauthorize the later push independently.
 
 If reconciliation cannot confirm the repository, return 503 and log `unknown`. A later normal push discovery starts fresh; another replica or a restarted process can handle it. There are no stored attempts, creation quotas or background reconciliation jobs. The forge coordinates concurrent name creation, and a repository left empty after an abandoned/failed push is not automatically deleted.
 
@@ -304,4 +305,4 @@ Use a local real Git HTTP backend for protocol integration tests and a disposabl
 
 Read scope is settled: branch-scoped ref retrieval with repository-authorized hash reads. Protocol scope is v2-only upload-pack plus the receive-pack protocol required by standard Git pushes. Agent authentication uses signed JWT permissions as HTTPS passwords without per-agent lookups. Upstream authentication defaults to shared, operator-provided tokens; no App is required. The implementation allows force updates under `w`, permits dry-run/abandoned discovery to create empty repositories, and leaves repositories uninitialized until an authorized push. Deployment choices remain: orchestrator signing/renewal integration and token-size/lifetime budgets; forge account/owner mappings and token permissions; and expected repository sizes and concurrency. LFS remains outside the initial scope.
 
-The Go implementation and automated tests are in this repository. The server is stateless and supports independent replicas without shared storage. Audit retention is external; metrics export remains follow-up work. Live forge account permissions require deployment-specific validation. See [README](../README.md) for the exact compatibility boundaries.
+The Go implementation and automated tests are in this repository. The server is stateless and supports independent replicas without shared storage. Audit retention is external; metrics export remains follow-up work. Live forge account permissions require deployment-specific validation. See the [gateway compatibility section](gateway.md#compatibility) for the exact boundaries.

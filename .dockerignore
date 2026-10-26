@@ -5,3 +5,5 @@
 !cmd/**
 !internal/
 !internal/**
+!deploy/
+!deploy/gitvend.default.yaml

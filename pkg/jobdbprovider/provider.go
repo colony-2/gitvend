@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	// ReadSecretName requests the configured tenant read permissions.
-	ReadSecretName = "gitvend_read_token"
-	// CellSecretName requests tenant reads plus writes to the authorized target cell.
+	// BaseSecretName requests the configured tenant base permissions.
+	BaseSecretName = "gitvend_base_token"
+	// CellSecretName requests base permissions plus rules narrowed to the authorized target cell.
 	CellSecretName = "gitvend_cell_token"
 )
 
@@ -40,20 +40,32 @@ func (p *Provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequ
 		if err := ctx.Err(); err != nil {
 			return jobdb.SecretResolveResult{}, err
 		}
-		if name != ReadSecretName && name != CellSecretName {
+		if name != BaseSecretName && name != CellSecretName {
 			continue
 		}
 		if _, issued := out.Secrets[name]; issued {
 			continue
 		}
-		permissions := append([]string(nil), t.reads...)
+		permissions := append([]string(nil), t.base...)
 		if name == CellSecretName {
 			repo, ok := cellRepository(r.AppMetadata, p.config.CellMetadataField)
-			if !ok || t.writes == nil || !t.writes.Read(repo) {
+			if !ok || t.target == nil {
 				continue
 			}
-			// Only the exact, normalized repository enters the JWT, never a metadata pattern.
-			permissions = append(permissions, repo.Host+"/"+repo.Path+":rw")
+			// Retain actions, ref selectors and denies, narrowing only the repository.
+			matchedAllow := false
+			for _, rule := range t.target.Rules {
+				if narrowed, matches := rule.ForRepository(repo); matches {
+					permissions = append(permissions, narrowed)
+					matchedAllow = matchedAllow || !rule.Deny
+				}
+			}
+			if !matchedAllow {
+				continue
+			}
+		}
+		if len(permissions) == 0 {
+			continue
 		}
 		if r.JobID == "" || r.Lease.LeaseID == "" || r.Lease.WorkerID == "" ||
 			r.Lease.LeaseExpiresAt.IsZero() || r.Lease.AuthorizedNotAfter.IsZero() {

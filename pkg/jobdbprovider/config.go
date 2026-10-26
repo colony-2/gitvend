@@ -5,38 +5,37 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/colony-2/gitvend/internal/auth"
-	"github.com/colony-2/gitvend/internal/jsonutil"
+	"github.com/colony-2/gitvend/internal/configutil"
 	"github.com/colony-2/gitvend/internal/policy"
 )
 
 type config struct {
-	Issuer               string                  `json:"issuer"`
-	Audience             string                  `json:"audience"`
-	KeyID                string                  `json:"key_id"`
-	SigningKeyFile       string                  `json:"signing_key_file"`
-	PolicyRevision       string                  `json:"policy_revision"`
-	MaxTokenBytes        int                     `json:"max_token_bytes"`
-	MaxLifetimeSeconds   int                     `json:"max_lifetime_seconds"`
-	GatewayLeewaySeconds int                     `json:"gateway_leeway_seconds"`
-	ClockMarginSeconds   int                     `json:"clock_margin_seconds"`
-	CellMetadataField    string                  `json:"cell_metadata_field"`
-	Tenants              map[string]tenantConfig `json:"tenants"`
+	Issuer               string                  `json:"issuer" yaml:"issuer"`
+	Audience             string                  `json:"audience" yaml:"audience"`
+	KeyID                string                  `json:"key_id" yaml:"key_id"`
+	SigningKeyFile       string                  `json:"signing_key_file" yaml:"signing_key_file"`
+	PolicyRevision       string                  `json:"policy_revision" yaml:"policy_revision"`
+	MaxTokenBytes        int                     `json:"max_token_bytes" yaml:"max_token_bytes"`
+	MaxLifetimeSeconds   int                     `json:"max_lifetime_seconds" yaml:"max_lifetime_seconds"`
+	GatewayLeewaySeconds int                     `json:"gateway_leeway_seconds" yaml:"gateway_leeway_seconds"`
+	ClockMarginSeconds   int                     `json:"clock_margin_seconds" yaml:"clock_margin_seconds"`
+	CellMetadataField    string                  `json:"cell_metadata_field" yaml:"cell_metadata_field"`
+	Tenants              map[string]tenantConfig `json:"tenants" yaml:"tenants"`
 }
 
 type tenantConfig struct {
-	ReadPermissions       []string `json:"read_permissions"`
-	CellWriteRepositories []string `json:"cell_write_repositories"`
+	BasePermissions   []string `json:"base_permissions" yaml:"base_permissions"`
+	TargetPermissions []string `json:"target_permissions" yaml:"target_permissions"`
 	// Omitted means any verified principal (including absent) in this tenant.
-	Principals []string `json:"principals,omitempty"`
+	Principals []string `json:"principals,omitempty" yaml:"principals,omitempty"`
 }
 
 type tenantPolicy struct {
-	reads      []string
-	writes     *policy.Policy
+	base       []string
+	target     *policy.Policy
 	principals map[string]bool
 }
 
@@ -66,7 +65,7 @@ func Load(path string) (*Provider, error) {
 	if len(b) > 1<<20 {
 		return nil, fmt.Errorf("configuration too large")
 	}
-	if err := jsonutil.Decode(b, &c); err != nil {
+	if err := configutil.Decode(b, &c); err != nil {
 		return nil, err
 	}
 	if c.SigningKeyFile == "" {
@@ -103,33 +102,26 @@ func newProvider(c config, key ed25519.PrivateKey, now func() time.Time) (*Provi
 		if id == "" {
 			return nil, fmt.Errorf("empty tenant")
 		}
-		reads, err := policy.Compile(t.ReadPermissions)
-		if err != nil {
-			return nil, fmt.Errorf("invalid tenant read permissions")
+		if len(t.BasePermissions)+len(t.TargetPermissions) == 0 || len(t.BasePermissions)+len(t.TargetPermissions) > policy.MaxRules {
+			return nil, fmt.Errorf("tenant requires 1..%d permission rules", policy.MaxRules)
 		}
-		for _, rule := range reads.Rules {
-			if rule.Actions != "r" {
-				return nil, fmt.Errorf("tenant read permissions may only contain r")
+		if len(t.BasePermissions) > 0 {
+			if _, err := policy.Compile(t.BasePermissions); err != nil {
+				return nil, fmt.Errorf("invalid tenant base permissions")
 			}
 		}
-		tp := tenantPolicy{reads: append([]string(nil), t.ReadPermissions...), principals: map[string]bool{}}
+		tp := tenantPolicy{base: append([]string(nil), t.BasePermissions...), principals: map[string]bool{}}
 		for _, principal := range t.Principals {
 			if principal == "" {
 				return nil, fmt.Errorf("empty principal")
 			}
 			tp.principals[principal] = true
 		}
-		if len(t.CellWriteRepositories) > 0 {
-			patterns := make([]string, 0, len(t.CellWriteRepositories))
-			for _, pattern := range t.CellWriteRepositories {
-				if strings.HasPrefix(pattern, "!") || strings.Contains(pattern, "#") || strings.HasSuffix(pattern, ".git") {
-					return nil, fmt.Errorf("expected cell repository pattern without actions, ref or .git suffix")
-				}
-				patterns = append(patterns, pattern+":r")
-			}
-			tp.writes, err = policy.Compile(patterns)
-			if err != nil || len(t.ReadPermissions) >= policy.MaxRules {
-				return nil, fmt.Errorf("invalid cell repository patterns or too many read permissions")
+		if len(t.TargetPermissions) > 0 {
+			var err error
+			tp.target, err = policy.Compile(t.TargetPermissions)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tenant target permissions")
 			}
 		}
 		p.tenants[id] = tp

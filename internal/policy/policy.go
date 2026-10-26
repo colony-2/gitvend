@@ -290,6 +290,35 @@ func (r Rule) MatchesRepository(repo Repository) bool {
 	}
 	return r.path.MatchString(repo.Path)
 }
+
+// ForRepository narrows a matching rule to one literal repository, preserving
+// its deny flag, actions and original ref selector (including escapes).
+func (r Rule) ForRepository(repo Repository) (string, bool) {
+	if !r.MatchesRepository(repo) {
+		return "", false
+	}
+	text := strings.TrimPrefix(r.Text, "!")
+	rest := text[strings.IndexByte(text, '/')+1:]
+	colon, _ := splitAt(rest, ':')
+	suffix := rest[colon:]
+	if r.Scoped {
+		hash, _ := splitAt(rest[:colon], '#')
+		suffix = rest[hash:]
+	}
+	var literal strings.Builder
+	if r.Deny {
+		literal.WriteByte('!')
+	}
+	literal.WriteString(repo.Host)
+	literal.WriteByte('/')
+	for _, c := range repo.Path {
+		if strings.ContainsRune(`()|#:!\*?[]`, c) {
+			literal.WriteByte('\\')
+		}
+		literal.WriteRune(c)
+	}
+	return literal.String() + suffix, true
+}
 func (p *Policy) Explain(repo Repository, ref, action string) Decision {
 	d := Decision{Allows: []string{}, Denies: []string{}}
 	for _, r := range p.Rules {

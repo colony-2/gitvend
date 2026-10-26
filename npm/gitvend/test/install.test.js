@@ -33,7 +33,7 @@ test("release asset names match all four build targets", () => {
   assert.throws(() => repositoryPath({ repository: "https://evil.example/github.com/a/b" }), /Unsupported repository/);
 });
 
-test("installer verifies checksums, installs a runnable binary and preserves it on failure", async (t) => {
+test("installer verifies checksums, installs both commands and preserves them on failure", async (t) => {
   const root = temporary(t);
   const source = path.join(root, "source");
   const packageRoot = path.join(root, "package");
@@ -42,8 +42,9 @@ test("installer verifies checksums, installs a runnable binary and preserves it 
   fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify(pkg));
   fs.cpSync(path.join(__dirname, "../bin"), path.join(packageRoot, "bin"), { recursive: true });
   fs.writeFileSync(path.join(source, "gitvend"), '#!/bin/sh\nprintf "arg=%s\\n" "$@"\nexit 7\n', { mode: 0o755 });
+  fs.copyFileSync(path.join(source, "gitvend"), path.join(source, "jobdb-gitvend-secret-provider"));
   const archive = path.join(root, "release.tar.gz");
-  execFileSync("tar", ["-czf", archive, "-C", source, "gitvend"]);
+  execFileSync("tar", ["-czf", archive, "-C", source, "gitvend", "jobdb-gitvend-secret-provider"]);
   const bytes = fs.readFileSync(archive);
   const hash = crypto.createHash("sha256").update(bytes).digest("hex");
   let checksum = `${hash}  gitvend_1.2.3_Linux_x86_64.tar.gz\n`;
@@ -62,11 +63,18 @@ test("installer verifies checksums, installs a runnable binary and preserves it 
   const result = spawnSync(process.execPath, [path.join(packageRoot, "bin/cli.js"), "version", "space value"], { encoding: "utf8" });
   assert.equal(result.status, 7);
   assert.equal(result.stdout, "arg=version\narg=space value\n");
+  const plugin = path.join(packageRoot, pkg.bin["jobdb-gitvend-secret-provider"]);
+  const pluginResult = spawnSync(plugin, ["--help"], { encoding: "utf8", env: {} });
+  assert.equal(pluginResult.status, 7);
+  assert.equal(pluginResult.stdout, "arg=--help\n");
+  assert.equal(pluginResult.stderr, "");
+  assert.equal(fs.statSync(plugin).mode & 0o777, 0o755);
   const original = fs.readFileSync(binary);
   for (const bad of [checksum.replace(hash, "0".repeat(64)), "", checksum + checksum]) {
     checksum = bad;
     await assert.rejects(install(options), /checksum/i);
     assert.deepEqual(fs.readFileSync(binary), original);
+    assert.deepEqual(fs.readFileSync(plugin), original);
   }
   for (const dest of destinations) assert.equal(fs.existsSync(dest), false, "temporary download cleaned up");
   fs.unlinkSync(binary);
@@ -119,8 +127,9 @@ test("installer rejects symlink binaries", async (t) => {
   const root = temporary(t);
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(pkg));
   fs.symlinkSync("/bin/sh", path.join(root, "gitvend"));
+  fs.writeFileSync(path.join(root, "jobdb-gitvend-secret-provider"), "plugin");
   const archive = path.join(root, "archive.tar.gz");
-  execFileSync("tar", ["-czf", archive, "-C", root, "gitvend"]);
+  execFileSync("tar", ["-czf", archive, "-C", root, "gitvend", "jobdb-gitvend-secret-provider"]);
   const bytes = fs.readFileSync(archive);
   const hash = crypto.createHash("sha256").update(bytes).digest("hex");
   await assert.rejects(install({
@@ -160,4 +169,35 @@ console.log("ready");
   });
   assert.deepEqual(result, { code: 0, signal: null });
   assert.match(output, /ready\nreloaded\n/);
+});
+
+
+test("missing or symlinked plugin leaves both installed commands untouched", async (t) => {
+  for (const badPlugin of ["missing", "symlink"]) {
+    const root = temporary(t);
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(pkg));
+    fs.mkdirSync(path.join(root, "vendor"));
+    fs.mkdirSync(path.join(root, "bin"));
+    for (const name of ["gitvend", "jobdb-gitvend-secret-provider"]) {
+      fs.writeFileSync(path.join(root, name === "gitvend" ? "vendor" : "bin", name), "original");
+    }
+    fs.writeFileSync(path.join(root, "gitvend"), "replacement");
+    const members = ["gitvend"];
+    if (badPlugin === "symlink") {
+      fs.symlinkSync("/bin/sh", path.join(root, "jobdb-gitvend-secret-provider"));
+      members.push("jobdb-gitvend-secret-provider");
+    }
+    const archive = path.join(root, "archive.tar.gz");
+    execFileSync("tar", ["-czf", archive, "-C", root, ...members]);
+    const bytes = fs.readFileSync(archive);
+    const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+    await assert.rejects(install({
+      packageRoot: root, platform: "linux", arch: "x64",
+      downloadFile: async (url, dest) => fs.writeFileSync(dest, url.endsWith("checksums.txt")
+        ? `${hash}  gitvend_1.2.3_Linux_x86_64.tar.gz\n` : bytes),
+    }));
+    for (const name of ["gitvend", "jobdb-gitvend-secret-provider"]) {
+      assert.equal(fs.readFileSync(path.join(root, name === "gitvend" ? "vendor" : "bin", name), "utf8"), "original");
+    }
+  }
 });

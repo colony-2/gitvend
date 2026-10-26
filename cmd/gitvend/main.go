@@ -4,15 +4,10 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,10 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/colony-2/gitvend/internal/auth"
 	"github.com/colony-2/gitvend/internal/config"
 	"github.com/colony-2/gitvend/internal/gateway"
-	"github.com/colony-2/gitvend/internal/jsonutil"
 	"github.com/colony-2/gitvend/internal/policy"
 )
 
@@ -37,168 +30,6 @@ func main() {
 	if e := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); e != nil {
 		fmt.Fprintln(os.Stderr, "gitvend:", e)
 		os.Exit(1)
-	}
-}
-func flags(name string, errout io.Writer) *flag.FlagSet {
-	f := flag.NewFlagSet(name, flag.ContinueOnError)
-	f.SetOutput(errout)
-	return f
-}
-
-type stringFlags []string
-
-func (s *stringFlags) String() string     { return strings.Join(*s, ",") }
-func (s *stringFlags) Set(v string) error { *s = append(*s, v); return nil }
-func run(args []string, in io.Reader, out, errout io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: gitvend serve|keygen|sign|explain|credential|version")
-	}
-	switch args[0] {
-	case "version":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: gitvend version")
-		}
-		fmt.Fprintln(out, "gitvend version", buildVersion())
-		return nil
-	case "serve":
-		f := flags("serve", errout)
-		path := f.String("config", "gitvend.json", "server config")
-		if e := f.Parse(args[1:]); e != nil {
-			return e
-		}
-		return serve(*path)
-	case "keygen":
-		f := flags("keygen", errout)
-		private := f.String("private", "signing.key", "private key output (must not exist)")
-		public := f.String("public", "signing.pub", "public key output (must not exist)")
-		ifMissing := f.Bool("if-missing", false, "initialize persistent keys, reusing and validating existing keys")
-		if e := f.Parse(args[1:]); e != nil {
-			return e
-		}
-		if *ifMissing {
-			if e := ensureSigningKeys(*private, *public); e != nil {
-				return e
-			}
-			fmt.Fprintln(out, "Signing keys ready")
-			return nil
-		}
-		pub, key, e := ed25519.GenerateKey(rand.Reader)
-		if e != nil {
-			return e
-		}
-		privDER, e := x509.MarshalPKCS8PrivateKey(key)
-		if e != nil {
-			return e
-		}
-		pubDER, e := x509.MarshalPKIXPublicKey(pub)
-		if e != nil {
-			return e
-		}
-		for _, p := range []string{*private, *public} {
-			if _, e = os.Stat(p); !os.IsNotExist(e) {
-				return fmt.Errorf("key output already exists or is inaccessible: %s", p)
-			}
-		}
-		if e = writeExclusive(*private, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})); e != nil {
-			return e
-		}
-		if e = writeExclusive(*public, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})); e != nil {
-			return e
-		}
-		fmt.Fprintln(out, "Wrote", *private, "and", *public)
-		return nil
-	case "sign":
-		f := flags("sign", errout)
-		keyPath := f.String("key", "", "private key PEM")
-		kid := f.String("kid", "", "configured key ID")
-		issuer := f.String("issuer", "", "configured issuer")
-		subject := f.String("subject", "", "agent/task identity")
-		aud := f.String("audience", "gitvend", "service audience")
-		ttl := f.Duration("ttl", 15*time.Minute, "token lifetime")
-		max := f.Int("max-token-bytes", 4096, "serialized JWT budget")
-		grantPath := f.String("grant", "", "JSON grant file (v, permissions)")
-		output := f.String("output", "", "atomic token file output; default stdout")
-		revision := f.String("policy-revision", "", "issuer revision for audit")
-		var perms stringFlags
-		f.Var(&perms, "permission", "permission string (repeatable)")
-		if e := f.Parse(args[1:]); e != nil {
-			return e
-		}
-		if *keyPath == "" || *kid == "" || *issuer == "" || *subject == "" || *aud == "" || *ttl <= 0 || *ttl > 24*time.Hour || *max < 512 || *max > 32768 {
-			return fmt.Errorf("key, kid, issuer, subject and valid lifetime/size required")
-		}
-		grant := auth.Grant{Version: 1, Permissions: perms}
-		if *grantPath != "" {
-			if len(perms) > 0 {
-				return fmt.Errorf("use grant file or permissions, not both")
-			}
-			b, e := os.ReadFile(*grantPath)
-			if e != nil {
-				return e
-			}
-			if e = jsonutil.Decode(b, &grant); e != nil {
-				return e
-			}
-		}
-		if grant.Version != 1 {
-			return fmt.Errorf("unsupported grant version")
-		}
-		b, e := os.ReadFile(*keyPath)
-		if e != nil {
-			return e
-		}
-		key, e := auth.ParsePrivate(b)
-		if e != nil {
-			return e
-		}
-		claims := auth.NewClaims(*issuer, *subject, *aud, *ttl, grant)
-		claims.PolicyRevision = *revision
-		token, e := auth.Sign(claims, key, *kid, *max)
-		if e != nil {
-			return e
-		}
-		if *output != "" {
-			return writeAtomic(*output, []byte(token+"\n"))
-		}
-		_, e = fmt.Fprintln(out, token)
-		return e
-	case "explain":
-		f := flags("explain", errout)
-		repo := f.String("repo", "", "host/namespace/repo")
-		ref := f.String("ref", "", "fully qualified ref")
-		action := f.String("action", "ref.update", "repo.read, repo.create, ref.discover, ref.create, ref.update or ref.delete")
-		var perms stringFlags
-		f.Var(&perms, "permission", "permission string (repeatable)")
-		if e := f.Parse(args[1:]); e != nil {
-			return e
-		}
-		host, path, ok := strings.Cut(*repo, "/")
-		if !ok {
-			return fmt.Errorf("repo must be host/namespace/repository")
-		}
-		p, e := policy.Compile(perms)
-		if e != nil {
-			return e
-		}
-		r := policy.Repository{Host: host, Path: strings.ToLower(path), FoldCase: true}
-		d := p.Explain(r, *ref, *action)
-		allowed := d.Allowed
-		switch *action {
-		case "repo.read", "repo.create":
-		case "ref.discover":
-			allowed = p.Discover(r, *ref)
-		case "ref.create", "ref.update", "ref.delete":
-			allowed = p.Write(r, *ref, *action)
-		default:
-			return fmt.Errorf("unknown action")
-		}
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{"allowed": allowed, "action": d, "repository_read": p.Explain(r, "", "repo.read"), "discovery": p.Explain(r, *ref, "ref.discover")})
-	case "credential":
-		return credential(args[1:], in, out, errout)
-	default:
-		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 func writeExclusive(path string, b []byte) error {
@@ -235,28 +66,18 @@ func writeAtomic(path string, b []byte) error {
 	}
 	return os.Rename(name, path)
 }
-func credential(args []string, in io.Reader, out, errout io.Writer) error {
-	f := flags("credential", errout)
-	host := f.String("host", "", "exact gateway host[:port]")
-	file := f.String("token-file", "", "injected JWT file")
-	env := f.String("token-env", "", "injected JWT environment variable name")
-	allowHTTP := f.Bool("allow-http", false, "allow explicit local development HTTP")
-	if e := f.Parse(args); e != nil {
-		return e
-	}
-	if !policy.ValidHost(strings.ToLower(*host)) || (*file == "") == (*env == "") {
+func credential(host, file, env string, allowHTTP bool, action string, in io.Reader, out io.Writer) error {
+	if !policy.ValidHost(strings.ToLower(host)) || (file == "") == (env == "") {
 		return fmt.Errorf("host and exactly one token source required")
 	}
-	if len(f.Args()) != 1 {
-		return fmt.Errorf("credential action required")
-	}
-	switch f.Arg(0) {
+	switch action {
 	case "store", "erase":
 		return nil
 	case "get":
 	default:
 		return fmt.Errorf("unsupported credential action")
 	}
+
 	scanner := bufio.NewScanner(io.LimitReader(in, 131073))
 	scanner.Buffer(make([]byte, 1024), 65535)
 	fields := map[string]string{}
@@ -282,18 +103,18 @@ func credential(args []string, in io.Reader, out, errout io.Writer) error {
 	if e := scanner.Err(); e != nil {
 		return e
 	}
-	if !strings.EqualFold(fields["host"], *host) || !(fields["protocol"] == "https" || *allowHTTP && fields["protocol"] == "http") {
+	if !strings.EqualFold(fields["host"], host) || !(fields["protocol"] == "https" || allowHTTP && fields["protocol"] == "http") {
 		return nil
 	}
 	var token string
-	if *file != "" {
-		b, e := os.ReadFile(*file)
+	if file != "" {
+		b, e := os.ReadFile(file)
 		if e != nil {
 			return fmt.Errorf("cannot read injected JWT")
 		}
 		token = strings.TrimSpace(string(b))
 	} else {
-		token = os.Getenv(*env)
+		token = os.Getenv(env)
 	}
 	if token == "" || len(token) > 32768 || strings.ContainsAny(token, "\x00\r\n") {
 		return fmt.Errorf("missing or invalid injected JWT")

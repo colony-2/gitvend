@@ -1,81 +1,157 @@
 # Gitvend secret-provider plugin for JobDB
 
-This executable implements `jobdb.SecretProvider` and serves it through JobDB's
-`secretplugin.Serve` SDK. JobDB starts it as a local subprocess using the SDK's
-authenticated gRPC protocol. It signs credentials locally with an Ed25519 key;
-the Gitvend gateway needs only the matching public key. No GitHub token is sent
-to JobDB or the worker by this plugin.
+The JobDB plugin gives workers short-lived Gitvend credentials for their jobs.
+You configure permissions per tenant and additional permissions for the target
+cell repository. JobDB starts the plugin when needed and passes verified job and
+lease information. The plugin signs tokens locally; the gateway needs only the
+matching public key. Workers never receive the GitHub token or private signing key.
 
+Set up a [Gitvend gateway](gateway.md) first, or configure it alongside the plugin.
+The plugin runs on the JobDB host; it does not replace the gateway.
 It returns only requested, authorized secret names:
 
 | Secret name | JWT permissions |
 | --- | --- |
-| `gitvend_read_token` | The configured tenant read permissions. |
-| `gitvend_cell_token` | The same reads plus `rw` for the exact target cell repository. |
+| `gitvend_base_token` | The configured tenant `base_permissions`, unchanged. |
+| `gitvend_cell_token` | Base permissions plus matching `target_permissions`, narrowed to the exact target cell repository. |
 
-These are signed JWT **tokens**, not signing keys. The cell token permits branch
-and tag creation/update within an existing repository; it does not grant ref
-deletion (`d`) or repository creation (`c`). Tenant read denies and gateway denies
-still apply. A read-only request does not need cell metadata.
+These are signed JWT **tokens**, not signing keys. Both lists accept the standard
+[Gitvend permission syntax](permission-syntax.md), including `r`, `w`, `d`, `c`,
+ref selectors, and denies. A base-token request does not need cell metadata.
+Matching denies still win across both lists and the gateway's deny rules.
 
-## Build and configure
+## Install
 
-From the Gitvend checkout:
-
-```sh
-make build
-mkdir -p .dev-secrets
-bin/gitvend keygen -private .dev-secrets/signing.key -public .dev-secrets/signing.pub
-cp examples/jobdb-gitvend-issuer.json .dev-secrets/gitvend-issuer.json
-bin/jobdb-gitvend-secret-provider --help
-```
-
-Edit the issuer file for your tenant names and permitted cell repositories.
-`signing_key_file` resolves relative to that file. Protect the private key and
-keep it in the provider process; configure Gitvend with the public key. The
-issuer, audience and key ID must match Gitvend's trusted-key configuration.
-The gateway's key owner ceiling and upstream owner routes must cover the intended
-repositories. Configure its upstream GitHub credential separately as usual.
-
-The command uses Cobra, with setup instructions available through `--help` or
-`help`. Running it without arguments also shows help. Validate your configuration
-and key without starting a plugin or watcher:
+On the host where JobDB runs, install the package:
 
 ```sh
-bin/jobdb-gitvend-secret-provider validate --config .dev-secrets/gitvend-issuer.json
+npm install -g @colony2/gitvend
+jobdb-gitvend-secret-provider --help
 ```
 
-JobDB still launches the executable as `jobdb-gitvend-secret-provider --config
-/absolute/path/to/issuer.json`. The command also supports `version`, `--version`,
-and Cobra's shell completion commands. Install the executable directly with Go:
+The package supplies prebuilt `gitvend` and `jobdb-gitvend-secret-provider`
+executables for Linux/macOS on amd64/arm64. npm requires Node.js 22+, `tar`, and
+enabled install scripts. For installation without Node.js, download a
+[release archive](https://github.com/colony-2/gitvend/releases) containing both
+executables, verify its checksum, and put them on `PATH`. Older releases may
+contain only the gateway; use a release that includes the plugin.
+
+The npm installer places a native executable at the plugin command path, so
+JobDB does not need Node.js or `PATH` in the plugin environment.
+
+Use a JobDB version with secret-provider plugin support. JobDB must be able to
+execute the installed command and read the issuer configuration and signing key.
+
+## Configure the issuer
+
+Configuration uses YAML. Unknown fields, duplicate keys and multiple documents
+are rejected. JSON-shaped mappings also load as YAML.
+
+Generate a signing key on the trusted JobDB host:
 
 ```sh
-go install github.com/colony-2/gitvend/cmd/jobdb-gitvend-secret-provider@latest
+mkdir -p gitvend-issuer
+gitvend keygen --private gitvend-issuer/signing.key --public gitvend-issuer/signing.pub
 ```
 
-Use a revision containing this command when installing an unreleased change.
+Save this as `gitvend-issuer/issuer.yaml`, replacing `YOUR_TENANT_ID` with the
+actual JobDB tenant ID:
+
+```yaml
+issuer: jobdb
+audience: gitvend
+key_id: jobdb
+signing_key_file: signing.key
+cell_metadata_field: repo
+tenants:
+  YOUR_TENANT_ID:
+    base_permissions:
+      - github.com/*:r
+    target_permissions:
+      - github.com/colony-2/*:rwc
+```
+
+This permits all GitHub reads available through the gateway, plus read/write/create
+on the target cell under `colony-2`. Use narrower base rules when tenants must not
+share private repository access. The [complete issuer example](../examples/jobdb-gitvend-issuer.yaml)
+also shows token lifetime and size settings.
+
+`signing_key_file` resolves relative to the issuer file. Keep the private key on
+the JobDB host and copy only `signing.pub` to the gateway. Add a gateway `keys`
+entry with ID `jobdb`, issuer `jobdb`, and the public key's path. Its owner
+allowlist and the upstream provider's allowed owners must cover the repositories
+in your policy. The audience must also match. Configure upstream GitHub credentials
+on the gateway separately.
+
+Validate before registering the plugin:
+
+```sh
+jobdb-gitvend-secret-provider validate --config gitvend-issuer/issuer.yaml
+```
+
+Expected output: `Configuration and signing key are valid.` This checks the local
+configuration and private key; it does not test GitHub access or gateway connectivity.
+
+## Tenant permissions
 
 Example policy for more restricted reads:
 
-```json
-{
-  "read_permissions": [
-    "github.com/public-org/*:r",
-    "github.com/example-org/shared-library:r"
-  ],
-  "cell_write_repositories": ["github.com/example-org/cell-*"],
-  "principals": ["trusted-job-submitter"]
-}
+```yaml
+base_permissions:
+  - github.com/public-org/*:r
+  - github.com/example-org/shared-library:r
+target_permissions:
+  - github.com/example-org/cell-*:rwc
+principals:
+  - trusted-job-submitter
 ```
 
-`read_permissions` accepts Gitvend permission syntax with only the `r` action,
-including read denies. `cell_write_repositories` accepts repository patterns
-without actions, ref selectors, denies, or `.git` suffixes. An empty/omitted list
-disables the cell token for that tenant. Optional `principals` restricts both
-tokens to those exact broker-verified principals; omitting it authorizes all
-principals, including absent principals, within that configured tenant.
+`base_permissions` applies to both tokens, including the target repository.
+`target_permissions` grants additional authority only for the repository selected
+by metadata. For example, this tenant policy allows all accessible GitHub reads
+and read/write/create on the target cell if it belongs to `colony-2`:
 
-Configure JobDB with a provider file, using absolute paths:
+```yaml
+base_permissions:
+  - github.com/*:r
+target_permissions:
+  - github.com/colony-2/*:rwc
+```
+
+For `AppMetadata.repo = "https://github.com/colony-2/my-cell.git"`, the cell JWT
+contains `github.com/*:r` and `github.com/colony-2/my-cell:rwc`. It does not grant
+writes or creation to any other cell. A target rule such as
+`github.com/colony-2/*#work/*:rw` retains its branch selector after narrowing.
+Use a separate repository-wide `:c` rule for creation when writes are branch-scoped;
+Gitvend rejects `c` with a ref selector.
+
+An empty/omitted base list disables the base token. An empty/omitted target list,
+or no matching target allow rule, disables the cell token. A tenant must have
+at least one rule, with at most 128 rules across both lists. Optional `principals`
+restricts both tokens to those exact broker-verified principals; omitting it
+authorizes all principals, including absent principals, within that tenant.
+
+Creation still requires the gateway provider's `allow_creation: true` and a
+readable/writable branch. Its `creation_defaults` chooses visibility and GitHub
+features; the issuer cannot override those defaults. See
+[gateway creation settings](gateway.md#repository-creation-defaults).
+
+### Migrating the original issuer config
+
+Rename `read_permissions` to `base_permissions`. Replace `cell_write_repositories`
+with `target_permissions`, adding `:rw` to each old repository pattern to preserve
+its permissions, or `:rwc` to also allow creation. Update workers to request
+`gitvend_base_token` instead of `gitvend_read_token`; `gitvend_cell_token` is unchanged.
+Old config fields are rejected, and the old secret name is omitted rather than
+silently returning a token that may now carry write permissions. Deploy the
+new config and executable together; validate the config before restarting JobDB's
+plugin process.
+
+## Register with JobDB
+
+Find the installed command with `command -v jobdb-gitvend-secret-provider`.
+Save a `providers.json` file using absolute paths for that executable and your
+issuer configuration:
 
 ```json
 {
@@ -84,8 +160,8 @@ Configure JobDB with a provider file, using absolute paths:
     {
       "id": "gitvend",
       "type": "plugin",
-      "command": "/absolute/path/to/gitvend/bin/jobdb-gitvend-secret-provider",
-      "args": ["--config", "/absolute/path/to/gitvend/.dev-secrets/gitvend-issuer.json"]
+      "command": "/absolute/path/to/jobdb-gitvend-secret-provider",
+      "args": ["--config", "/absolute/path/to/gitvend-issuer/issuer.yaml"]
     }
   ]
 }
@@ -95,9 +171,7 @@ Configure JobDB with a provider file, using absolute paths:
 jobdb sqlite --db ./jobdb.db --secret-providers-file /absolute/path/to/providers.json
 ```
 
-The JobDB version must include the secret-provider plugin SDK. This module pins
-the SDK commit used for testing. Other providers, including SQLite, can coexist
-in the same provider file; the first entry for each secret name wins. See
+Other providers, including SQLite, can coexist in the same provider file; the first entry for each secret name wins. See
 [the provider guide](https://github.com/colony-2/jobdb/blob/f403447cb58a7195e32a55fb7f417e09da70f388/docs/GUIDE-SECRET-PROVIDERS.md) for collection behavior.
 An omission here cannot veto a grant from a different provider.
 
@@ -105,6 +179,8 @@ The worker requests either or both names through JobDB's normal secret-resolutio
 API and uses the returned JWT as the Gitvend HTTP Basic password. It still uses
 the gateway's Git URL, for example
 `https://gitvend.example/github/example-org/cell-one.git`, with Git protocol v2.
+Follow the [agent authentication instructions](gateway.md#configure-git-authentication)
+to configure the Git credential helper.
 
 ## Cell metadata and authorization
 
@@ -127,12 +203,13 @@ its value must still identify a repository, not an opaque cell ID. SSH URLs and
 cell-ID-to-repository lookups are not implemented.
 
 The provider matches that repository against the **verified tenant's** configured
-cell write patterns, then adds only the exact repository to the cell JWT.
+target rules, then replaces each matching rule's repository pattern with the
+exact repository while preserving its actions, ref selector and deny flag.
 Missing, malformed or unauthorized metadata omits the cell token while leaving
-an independently authorized read token available. Unknown names and tenants are
+an independently authorized base token available. Unknown names and tenants are
 also omitted.
 
-Application metadata may be submitter-controlled. The configured write patterns
+Application metadata may be submitter-controlled. The configured target patterns
 are an authorization ceiling: authorized jobs in that tenant may select any
 matching cell. If individual jobs or principals must be confined to different
 cells within a tenant, a trusted job/principal-to-cell authorization lookup is
@@ -141,8 +218,7 @@ a binding. `cell_id` and `cell_name` do not override `repo`.
 
 ## Private repository reads
 
-The initial implementation deliberately does not discover GitHub visibility or
-user membership. `github.com/*:r` authorizes reads across the host, intersected
+The plugin does not discover GitHub visibility or user membership. `github.com/*:r` authorizes reads across the host, intersected
 with Gitvend's signing-key owner ceiling, gateway routes/denies, and the actual
 upstream GitHub token's permissions. Permission strings use `github.com`, not
 the route alias `github`.
@@ -157,8 +233,7 @@ For different tenant read scopes, configure explicit tenant read patterns. For
 credential-level separation, use separate gateway deployments/credentials or
 non-overlapping owner routes and key ceilings as appropriate. A pattern does
 not mean “public repositories only”: matching private repositories are readable
-if the upstream token allows them. Visibility-aware authorization remains outside
-this first version.
+if the upstream token allows them. The plugin has no “public repositories only” permission option.
 
 ## Lifetime and operation
 
@@ -177,25 +252,21 @@ through an older presenting capability; obtain a renewed handle and use JobDB's
 fresh secret resolution to refresh credentials. Already delivered JWTs remain
 valid until their expiry plus gateway leeway even if the job is canceled earlier.
 
-There is no token cache. Every resolution issues fresh token IDs. The audit
-subject is `jobdb:` followed by the SHA-256 digest of the JSON array
-`[tenantID, jobID, leaseID, workerID, principal]`; absent principal is JSON `null`.
-This binds audit identity to the lease attempt within Gitvend's subject length
-limit. `policy_revision` is copied into the JWT for gateway auditing.
+Every resolution issues fresh tokens. `policy_revision` is included for gateway
+auditing; the audit subject identifies the tenant/job/lease context without
+exposing the raw identifiers.
 
-Configuration and the referenced signing-key file reload automatically using
-fsnotify on Linux and macOS. The plugin watches their parent directories so
-atomic file replacements continue to be detected. Changes are debounced for
-100 milliseconds, then a fresh configuration and key are fully validated before
-being published together. Each request captures one complete snapshot; an
-in-flight request finishes with its original policy and key, while new requests
-use the replacement. Removed tenants and permissions are removed on reload.
+## Configuration reloads and key rotation
+
+Configuration and signing-key changes reload automatically on Linux and macOS,
+including atomic file replacements. A request uses one complete configuration
+and key snapshot; subsequent requests use the replacement after validation.
+Removed tenants and permissions affect newly issued tokens.
 
 A malformed, missing or unreadable replacement leaves the last valid snapshot
 active. The plugin reports a fixed error message and retries every second until
 loading succeeds, including when a new signing-key path does not exist yet.
-Startup still requires valid files and working directory watches. Changing the
-key path updates the watches after a successful reload. For coordinated key
+Startup still requires valid files and access to watch their directories. For coordinated key
 rotation, write a new key file first, then atomically replace the config with its
 new path and key ID; provision the corresponding gateway public key beforehand.
 
@@ -207,22 +278,26 @@ with no periodic polling after successful loads. Network filesystems and changes
 to symlink targets outside the watched directories require a different update
 mechanism or restarting the plugin host.
 
-## Development
+## Command reference
 
-```sh
-make check-jobdb-provider
-```
+| Command | Purpose |
+| --- | --- |
+| `jobdb-gitvend-secret-provider --help` | Show setup instructions. |
+| `jobdb-gitvend-secret-provider validate --config issuer.yaml` | Validate local configuration and the signing key. |
+| `jobdb-gitvend-secret-provider --config issuer.yaml` | Invocation registered with JobDB; JobDB launches this process. |
+| `jobdb-gitvend-secret-provider version` | Show the installed version. |
+| `jobdb-gitvend-secret-provider completion --help` | Set up shell completion. |
 
-Tests verify grants and effective expiry with Gitvend's actual verifier, tenant
-and principal checks, metadata injection rejection, concurrent reloads, key
-rotation, invalid-file recovery, and the built executable's real JobDB plugin
-handshake and live reload. The executable lives in
-`cmd/jobdb-gitvend-secret-provider`, with Cobra commands in its `internal/cmd`
-package. Credential issuance and reloads live in the reusable `pkg/jobdbprovider`
-package. `Load` creates a fixed provider; `WatchConfig` creates a reloadable one
-that must be closed when finished. Both implement `jobdb.SecretProvider`.
+## Troubleshooting
 
-The plugin shares the root Go module and Gitvend signing implementation.
-`go test ./...`, `go vet ./...`, and `make check` include it automatically.
-`make build` builds both executables; `make build-jobdb-provider` builds only
-the plugin. The gateway executable does not import the JobDB provider package.
+| Symptom | What to check |
+| --- | --- |
+| Command is missing after npm install | Use a release that includes the plugin, check `PATH`, and ensure npm install scripts ran. After fixing download/install-script errors, run `npm rebuild @colony2/gitvend`. |
+| Configuration validation fails | Check YAML field names, permission syntax, tenant IDs, and the signing-key path relative to the issuer file. |
+| Neither token is returned | Check the verified tenant/principal, requested secret names, and job lease authority. Unknown names and unauthorized tenants are omitted. |
+| Base token works but cell token is missing | Check `AppMetadata.repo`, `cell_metadata_field`, and whether a target allow rule matches that exact repository. |
+| Gateway rejects a token | Check issuer, key ID, audience, signing key, clock tolerance, lifetime limits, and gateway owner allowlists. |
+| Cell push cannot create a repository | The target rules need `c` plus a readable/writable branch. Check the gateway's `allow_creation`, upstream permissions, and creation settings. |
+| Config changed but a worker still has old permissions | Obtain fresh secrets through JobDB. Already issued JWTs retain their permissions until expiry, and invalid replacements leave the last valid config active. |
+
+For source builds, tests, or SDK integration, see the [developer guide](development.md).

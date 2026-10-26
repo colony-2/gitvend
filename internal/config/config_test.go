@@ -84,3 +84,44 @@ func TestRemovedStateSettingsAreRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestWildcardOwners(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		provider []string
+		key      []string
+		addOwner string
+		reverse  bool
+		valid    bool
+	}{
+		{name: "all owners", provider: []string{"*"}, key: []string{"*"}, valid: true},
+		{name: "restricted issuer", provider: []string{"*"}, key: []string{"org"}, valid: true},
+		{name: "issuer exceeds provider", provider: []string{"org"}, key: []string{"*"}},
+		{name: "mixed provider wildcard", provider: []string{"*", "org"}, key: []string{"org"}},
+		{name: "mixed issuer wildcard", provider: []string{"*"}, key: []string{"*", "org"}},
+		{name: "partial wildcard", provider: []string{"org*"}, key: []string{"org"}},
+		{name: "invalid issuer name", provider: []string{"*"}, key: []string{"Org"}},
+		{name: "provider wildcard overlap", provider: []string{"*"}, key: []string{"*"}, addOwner: "other"},
+		{name: "reverse wildcard overlap", provider: []string{"*"}, key: []string{"*"}, addOwner: "other", reverse: true},
+		{name: "two wildcards", provider: []string{"*"}, key: []string{"*"}, addOwner: "*"},
+		{name: "distinct scoped routes", provider: []string{"org"}, key: []string{"org"}, addOwner: "other", valid: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validConfig(t)
+			c.Providers[0].AllowedOwners = tt.provider
+			c.Keys[0].Owners["github.com"] = tt.key
+			if tt.addOwner != "" {
+				second := c.Providers[0]
+				second.Alias = "second"
+				second.AllowedOwners = []string{tt.addOwner}
+				c.Providers = append(c.Providers, second)
+				if tt.reverse {
+					c.Providers[0], c.Providers[1] = c.Providers[1], c.Providers[0]
+				}
+			}
+			if err := c.Validate(); (err == nil) != tt.valid {
+				t.Fatalf("valid=%v, error=%v", tt.valid, err)
+			}
+		})
+	}
+}
