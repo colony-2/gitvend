@@ -43,16 +43,11 @@ func WatchConfig(path string, report func(string)) (*ReloadingProvider, error) {
 	if err != nil {
 		return nil, err
 	}
-	w, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, err
-	}
 	if report == nil {
 		report = func(string) {}
 	}
-	r := &ReloadingProvider{path: path, watcher: w, report: report, stop: make(chan struct{}), done: make(chan struct{})}
+	r := &ReloadingProvider{path: path, report: report, stop: make(chan struct{}), done: make(chan struct{})}
 	if err := r.reload(); err != nil {
-		w.Close()
 		return nil, err
 	}
 	go r.watch()
@@ -78,11 +73,22 @@ func signingKeyPath(path string, p *Provider) string {
 }
 
 // reload runs only during initialization or on the watcher goroutine. Watch
-// directories so atomic file replacements do not detach the watch. Re-adding
-// them also restores watches after a directory has been removed and recreated.
+// directories so atomic file replacements do not detach the watch. Build a fresh
+// watcher before loading: kqueue can retain child-file watches from a renamed
+// directory, so re-adding the directory to the old watcher is not sufficient.
+// Keep the previous watcher and snapshot until their replacements are ready.
 func (r *ReloadingProvider) reload() error {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if r.watcher != w {
+			_ = w.Close()
+		}
+	}()
 	configDir := filepath.Dir(r.path)
-	if err := r.watcher.Add(configDir); err != nil {
+	if err := w.Add(configDir); err != nil {
 		return err
 	}
 	next, err := Load(r.path)
@@ -91,7 +97,7 @@ func (r *ReloadingProvider) reload() error {
 	}
 	keyPath := signingKeyPath(r.path, next)
 	keyDir := filepath.Dir(keyPath)
-	if err := r.watcher.Add(keyDir); err != nil {
+	if err := w.Add(keyDir); err != nil {
 		return err
 	}
 	// Read again after installing the key watch to cover changes during startup
@@ -103,12 +109,11 @@ func (r *ReloadingProvider) reload() error {
 	if signingKeyPath(r.path, next) != keyPath {
 		return fmt.Errorf("signing key path changed while loading")
 	}
+	old := r.watcher
+	r.watcher = w
 	r.current.Store(next)
-	for _, dir := range r.watcher.WatchList() {
-		if dir != configDir && dir != keyDir {
-			// A concurrent directory removal may already have removed this watch.
-			_ = r.watcher.Remove(dir)
-		}
+	if old != nil {
+		_ = old.Close()
 	}
 	return nil
 }
@@ -124,7 +129,8 @@ func (r *ReloadingProvider) relevant(event fsnotify.Event) bool {
 
 func (r *ReloadingProvider) watch() {
 	defer close(r.done)
-	defer r.watcher.Close()
+	// reload replaces the watcher; close the current one when stopping.
+	defer func() { _ = r.watcher.Close() }()
 	var timer *time.Timer
 	var tick <-chan time.Time
 	defer func() {

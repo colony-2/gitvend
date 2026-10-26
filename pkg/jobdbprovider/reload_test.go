@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
-	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/colony-2/gitvend/internal/auth"
 	"github.com/colony-2/gitvend/internal/policy"
 	"github.com/colony-2/jobdb/pkg/jobdb"
+	"gopkg.in/yaml.v3"
 )
 
 func eventually(t *testing.T, check func() bool) {
@@ -260,24 +260,23 @@ func replaceSigningKey(t *testing.T, path string) ed25519.PublicKey {
 	return pub
 }
 
-func TestReloadAfterConfigDirectoryReplacement(t *testing.T) {
-	r, _, _, logs := watchFixture(t)
+func replaceWatchedDirectory(t *testing.T, r *ReloadingProvider, dir string, logs <-chan string, files ...string) {
+	t.Helper()
 	before := r.current.Load()
-	dir := filepath.Dir(r.path)
-	// Replacing the whole directory removes its kernel watch; retry must re-add it.
-	backup := dir + "-old"
+	// Keep the renamed files alive to exercise kqueue's retained child watches.
+	// Recovery must watch the new files, not just load them once on a retry.
+	backup := filepath.Join(t.TempDir(), "old")
 	if err := os.Rename(dir, backup); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(backup) })
 	awaitFailure(t, logs)
 	if r.current.Load() != before {
-		t.Fatal("missing configuration directory changed snapshot")
+		t.Fatal("missing watched directory changed snapshot")
 	}
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"issuer.yaml", "signing.key"} {
+	for _, name := range files {
 		data, err := os.ReadFile(filepath.Join(backup, name))
 		if err != nil {
 			t.Fatal(err)
@@ -285,10 +284,63 @@ func TestReloadAfterConfigDirectoryReplacement(t *testing.T) {
 		replaceFile(t, filepath.Join(dir, name), data)
 	}
 	eventually(t, func() bool { return r.current.Load() != before })
+}
+
+func TestReloadAfterConfigDirectoryReplacement(t *testing.T) {
+	r, _, _, logs := watchFixture(t)
 	c := testConfig()
-	c.SigningKeyFile, c.PolicyRevision = "signing.key", "after-directory-replacement"
-	replaceConfig(t, r.path, c)
-	eventually(t, func() bool { return r.current.Load().config.PolicyRevision == c.PolicyRevision })
+	c.SigningKeyFile = "signing.key"
+	for _, revision := range []string{"first-directory-replacement", "second-directory-replacement"} {
+		replaceWatchedDirectory(t, r, filepath.Dir(r.path), logs, "issuer.yaml", "signing.key")
+		c.PolicyRevision = revision
+		replaceConfig(t, r.path, c)
+		eventually(t, func() bool { return r.current.Load().config.PolicyRevision == revision })
+		// Direct writes must also reach the new file's watch after an atomic edit.
+		c.PolicyRevision = revision + "-direct-write"
+		data, err := yaml.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(r.path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, func() bool { return r.current.Load().config.PolicyRevision == c.PolicyRevision })
+	}
+}
+
+func TestReloadAfterSigningKeyDirectoryReplacement(t *testing.T) {
+	p, _, _ := testProvider(t)
+	path := writeConfig(t, p)
+	c := testConfig()
+	c.SigningKeyFile = filepath.Join(t.TempDir(), "signing.key")
+	replaceSigningKey(t, c.SigningKeyFile)
+	replaceConfig(t, path, c)
+	logs := make(chan string, 128)
+	r, err := WatchConfig(path, func(message string) { logs <- message })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	for range 2 {
+		replaceWatchedDirectory(t, r, filepath.Dir(c.SigningKeyFile), logs, "signing.key")
+		pub := replaceSigningKey(t, c.SigningKeyFile)
+		eventually(t, func() bool {
+			return bytes.Equal(r.current.Load().key.Public().(ed25519.PublicKey), pub)
+		})
+		// A subsequent in-place key rotation also needs the correct child watch.
+		nextKey := filepath.Join(t.TempDir(), "next.key")
+		pub = replaceSigningKey(t, nextKey)
+		data, err := os.ReadFile(nextKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(c.SigningKeyFile, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, func() bool {
+			return bytes.Equal(r.current.Load().key.Public().(ed25519.PublicKey), pub)
+		})
+	}
 }
 
 func TestRequestUsesSingleSnapshotAcrossSwap(t *testing.T) {
@@ -388,6 +440,10 @@ func TestWatcherStartupAndClose(t *testing.T) {
 		t.Fatal("missing initial configuration accepted")
 	}
 	r, _, _, _ := watchFixture(t)
+	c := testConfig()
+	c.SigningKeyFile, c.PolicyRevision = "signing.key", "reload-before-close"
+	replaceConfig(t, r.path, c)
+	eventually(t, func() bool { return r.current.Load().config.PolicyRevision == c.PolicyRevision })
 	r.Close()
 	r.Close()
 	if r.watcher.WatchList() != nil {
