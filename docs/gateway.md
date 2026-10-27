@@ -355,6 +355,12 @@ jq -c 'select(.audit.operation == "git-receive-pack") | .audit' audit.jsonl
 
 Push audit distinguishes `accepted`, `rejected`, `partial` and `unknown`; HTTP 200 alone is not success. Creation outcomes are `created`, `reconciled`, `configuration_failed`, `rejected` or `unknown` and do not claim that a subsequent push succeeded. A crash can leave an admission with no final record. Log delivery is best-effort, with retention and durability handled by your logging infrastructure. Inspect the remote refs before retrying an interrupted push; gitvend never retries a push automatically.
 
+Large pushes can begin with a flush-only HTTP authentication probe. These are
+logged as `git-receive-pack-probe`; an accepted probe means the gateway accepted
+the credential and found writable refs. It does not verify upstream permissions,
+create a repository, or update any refs. The subsequent push is authorized and
+audited separately as `git-receive-pack`.
+
 ### Multiple instances
 
 Run any number of instances behind the same HTTPS endpoint with matching configuration, trusted keys and credentials. No shared disk, database, distributed lock or sticky session is required. Configuration/key rotations must reach each instance; a reload on one instance does not update others. `max_concurrent` and request limits apply per instance. If you need fleet-wide rate limits or creation budgets, enforce them outside gitvend. A metrics export endpoint is not implemented.
@@ -430,7 +436,9 @@ legacy single-dash long flags. For credential helpers, Git appends the final ope
 
 ## Compatibility
 
-Supported object format is SHA-1. SSH, Git LFS, Git protocol v0/v1 fetch, signed push certificates, push options, named shallow exclusions, ref-in-want, offloaded pack/bundle URLs and provider-managed ref namespaces are rejected or not advertised. Branch writes can include workflow files; CI execution and secrets remain governed by the forge's configuration. GitHub branch rules continue to apply to the shared upstream identity.
+Supported object format is SHA-1. Pushes from shallow clones and streamed large
+pushes are supported; the upstream still validates object connectivity and can
+reject a push with missing history. SSH, Git LFS, Git protocol v0/v1 fetch, signed push certificates, push options, named shallow exclusions, ref-in-want, offloaded pack/bundle URLs and provider-managed ref namespaces are rejected or not advertised. Branch writes can include workflow files; CI execution and secrets remain governed by the forge's configuration. GitHub branch rules continue to apply to the shared upstream identity.
 
 Use a disposable repository to confirm your upstream token, organization creation
 policy, workflow permissions and GitHub Enterprise version before rolling out to

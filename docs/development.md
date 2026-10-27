@@ -83,6 +83,30 @@ Git features. See the [design](git-proxy-design.md) for requirements and tradeof
 [c2r](https://github.com/colony-2/c2r) informed the provisioning approach; Gitvend
 uses a direct GitHub adapter and copies no c2r source.
 
+### Git interoperability regression coverage
+
+Linux and macOS CI run the full race suite and vet, including actual Git clients
+and `git-http-backend`. The test jobs print the Git version they exercised.
+The local backend alone does not reproduce every GitHub response format; tests
+also inject the upload-pack service preamble observed from GitHub.
+
+| Behavior | Regression coverage |
+| --- | --- |
+| Upload-pack discovery | Bare v2 and service-header-prefixed v2; real discovery, clone and fetch; malformed headers and downgrades rejected. |
+| Push transport | Twelve real-Git scenarios: full/shallow checkout × new/existing branch × small/default-buffer-overflow/configured-buffer-overflow pack. Each attempts a denied push before an allowed one and verifies the remote ref. |
+| First push and upstream refusal | A large first push provisions and populates a new repository; shallow pushes to an upstream that refuses missing history remain rejected and do not create refs. |
+| HTTP authentication probes | Flush-only requests with fixed-length, chunked and gzip bodies; JWT and write authorization required; no upstream calls or repository creation. |
+| Shallow push metadata | Preserve declarations before ref commands and leave pack bytes unread; reject malformed or misplaced declarations and enforce command byte/ref limits. |
+| Malformed probes | Reject truncation, read errors, trailing commands, additional flushes and pack data. |
+
+When a production compatibility failure is reported, first add a test that
+reproduces its wire format or real-client behavior and fails on the existing code.
+For parser changes, include both accepted traffic and malformed/unauthorized
+variants, then seed the wire fuzzer with the new valid format. Statement coverage
+alone cannot establish protocol compatibility. These tests use local upstreams;
+they do not replace a deployment smoke test against GitHub with the operator's
+actual credentials and repository settings.
+
 ## Release automation
 
 The [release workflow](../.github/workflows/release.yaml) follows [c2j's release pattern](https://github.com/colony-2/c2j/blob/main/.github/workflows/release.yaml). Successful pushes to `main` in the `colony-2` organization run the test suite, automatically bump and push a version tag (patch by default), build both executables for four platforms, and publish GitHub release archives and checksums. It then publishes `@colony2/gitvend` to npm with `gitvend` and `jobdb-gitvend-secret-provider` commands after installing and smoke-testing the installed commands against the published assets. It also publishes Linux amd64/arm64 container images to `ghcr.io/colony-2/gitvend` with the release tag and `latest`, using `GITHUB_TOKEN` with package-write permission.

@@ -242,6 +242,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fail(400, "invalid or unsupported push: "+e.Error())
 				return
 			}
+			if push.Probe {
+				// A probe authenticates the gateway request only. It neither
+				// provisions a repository nor forwards any data to the forge.
+				event.Operation = "git-receive-pack-probe"
+				allowed, err := id.Policy.CanWrite(rt.repo, false)
+				if err != nil {
+					fail(403, "grant too complex for push probe")
+					return
+				}
+				if !allowed {
+					fail(403, "no writable refs for push probe")
+					return
+				}
+				event.Outcome = "accepted"
+				w.Header().Set("Content-Type", gitwire.ExpectedContentType(rt.service, false))
+				w.Header().Set("Content-Length", "0")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			event.Updates = push.Updates
 			for _, u := range push.Updates {
 				if !id.Policy.Write(rt.repo, u.Ref, u.Action) {

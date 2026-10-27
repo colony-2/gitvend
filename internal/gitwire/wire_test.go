@@ -59,7 +59,7 @@ func TestPush(t *testing.T) {
 }
 func TestPushRejected(t *testing.T) {
 	valid := zero + " " + id1 + " refs/heads/main"
-	for _, b := range [][]byte{packets("flush"), packets(valid+"\x00push-options", "flush"), packets(valid, valid, "flush"), packets(zero+" "+zero+" refs/heads/main", "flush"), packets(zero+" "+id1+" refs/heads/a..b", "flush"), packets(valid+"\x00object-format=sha256", "flush"), packets(valid, "delim"), packets("shallow "+id1, valid, "flush"), packets("push-cert\x00report-status", "flush")} {
+	for _, b := range [][]byte{packets(valid+"\x00push-options", "flush"), packets(valid, valid, "flush"), packets(zero+" "+zero+" refs/heads/main", "flush"), packets(zero+" "+id1+" refs/heads/a..b", "flush"), packets(valid+"\x00object-format=sha256", "flush"), packets(valid, "delim"), packets("push-cert\x00report-status", "flush")} {
 		if _, e := ParsePush(bytes.NewReader(b), 1<<20, 100); e == nil {
 			t.Errorf("accepted %q", b)
 		}
@@ -162,11 +162,24 @@ func FuzzWire(f *testing.F) {
 	f.Add(packets("version 2", "ls-refs=unborn", "fetch=shallow filter", "object-format=sha1", "flush"))
 	f.Add(packets("# service=git-upload-pack", "flush", "version 2", "ls-refs=unborn", "fetch=shallow filter", "flush"))
 	f.Add(packets("# service=git-upload-pack", "flush", id1+" refs/heads/main\x00multi_ack", "flush"))
+	f.Add(packets("flush"))
+	f.Add(packets("shallow "+id1, zero+" "+id2+" refs/heads/main\x00report-status side-band-64k", "flush"))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) > 65536 {
 			return
 		}
-		ParsePush(bytes.NewReader(b), 65536, 100)
+		r := bytes.NewReader(b)
+		if push, err := ParsePush(r, 65536, 100); err == nil {
+			if push.Probe && !bytes.Equal(b, []byte("0000")) {
+				t.Fatal("nonempty push accepted as an authentication probe")
+			}
+			if push.Probe != (len(push.Updates) == 0) {
+				t.Fatal("push classified without any ref commands")
+			}
+			if len(push.Prefix) != len(b)-r.Len() {
+				t.Fatal("parser consumed data beyond the forwarded command prefix")
+			}
+		}
 		ParseFetch(b)
 		FilterCapabilities(b)
 		FilterRefs(b, nil, func(string) bool { return false })

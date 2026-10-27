@@ -3,10 +3,11 @@ package gitwire
 import (
 	"bytes"
 	"fmt"
-	"github.com/colony-2/gitvend/internal/policy"
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/colony-2/gitvend/internal/policy"
 )
 
 type Update struct {
@@ -19,6 +20,7 @@ type Push struct {
 	Prefix       []byte
 	Updates      []Update
 	Capabilities []string
+	Probe        bool // Exactly one flush packet and EOF, with no commands or pack.
 }
 
 func OID(s string) bool {
@@ -44,6 +46,7 @@ func ParsePush(r io.Reader, maxBytes, maxRefs int) (Push, error) {
 	out := Push{}
 	var b bytes.Buffer
 	seen := map[string]bool{}
+	shallow := false
 	for {
 		p, e := Read(r)
 		if e != nil {
@@ -62,6 +65,13 @@ func ParsePush(r io.Reader, maxBytes, maxRefs int) (Push, error) {
 		line := strings.TrimSuffix(string(p.Data), "\n")
 		if strings.ContainsAny(line, "\r\n") {
 			return out, fmt.Errorf("invalid command")
+		}
+		if strings.HasPrefix(line, "shallow ") {
+			if len(out.Updates) != 0 || !OID(strings.TrimPrefix(line, "shallow ")) {
+				return out, fmt.Errorf("invalid or misplaced shallow declaration")
+			}
+			shallow = true
+			continue
 		}
 		if left, right, ok := strings.Cut(line, "\x00"); ok {
 			if len(out.Updates) != 0 || strings.ContainsRune(right, 0) {
@@ -96,7 +106,17 @@ func ParsePush(r io.Reader, maxBytes, maxRefs int) (Push, error) {
 		}
 	}
 	if len(out.Updates) == 0 {
-		return out, fmt.Errorf("empty push")
+		if shallow {
+			return out, fmt.Errorf("shallow declarations require ref commands")
+		}
+		// Git probes HTTP authentication with a flush-only POST before sending
+		// a large pack. Require EOF so commands or pack data cannot be smuggled
+		// past authorization as part of an otherwise harmless probe.
+		var extra [1]byte
+		if n, err := io.ReadFull(r, extra[:]); n != 0 || err != io.EOF {
+			return out, fmt.Errorf("invalid push probe body")
+		}
+		out.Probe = true
 	}
 	out.Prefix = b.Bytes()
 	return out, nil
