@@ -6,10 +6,21 @@ import (
 	"strings"
 )
 
-// FilterCapabilities rejects downgrade responses and advertises only features this gate understands.
+// FilterCapabilities accepts bare v2 advertisements and the optional smart-HTTP
+// upload-pack service preamble. It emits bare v2, rejects downgrade responses,
+// and advertises only features this gate understands.
 func FilterCapabilities(b []byte) ([]byte, error) {
 	r := bytes.NewReader(b)
 	p, e := Read(r)
+	if e == nil && p.Kind == 3 && strings.TrimSuffix(string(p.Data), "\n") == "# service=git-upload-pack" {
+		// Consume exactly one service header and its flush. The next packet must
+		// still declare v2; a service header alone does not establish the version.
+		p, e = Read(r)
+		if e != nil || p.Kind != 0 {
+			return nil, fmt.Errorf("invalid upload-pack service header")
+		}
+		p, e = Read(r)
+	}
 	if e != nil || p.Kind != 3 || string(p.Data) != "version 2\n" {
 		return nil, fmt.Errorf("upstream must speak Git protocol v2")
 	}

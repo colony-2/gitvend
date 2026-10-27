@@ -159,6 +159,9 @@ func TestPushAdvertisement(t *testing.T) {
 func FuzzWire(f *testing.F) {
 	f.Add(packets("command=ls-refs", "delim", "flush"))
 	f.Add(packets(zero+" "+id1+" refs/heads/main", "flush"))
+	f.Add(packets("version 2", "ls-refs=unborn", "fetch=shallow filter", "object-format=sha1", "flush"))
+	f.Add(packets("# service=git-upload-pack", "flush", "version 2", "ls-refs=unborn", "fetch=shallow filter", "flush"))
+	f.Add(packets("# service=git-upload-pack", "flush", id1+" refs/heads/main\x00multi_ack", "flush"))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) > 65536 {
 			return
