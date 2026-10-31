@@ -11,7 +11,6 @@ type CreationDefaults struct {
 	HasIssues                 *bool   `json:"has_issues,omitempty" yaml:"has_issues,omitempty"`
 	HasProjects               *bool   `json:"has_projects,omitempty" yaml:"has_projects,omitempty"`
 	HasWiki                   *bool   `json:"has_wiki,omitempty" yaml:"has_wiki,omitempty"`
-	HasPullRequests           *bool   `json:"has_pull_requests,omitempty" yaml:"has_pull_requests,omitempty"`
 	PullRequestCreationPolicy string  `json:"pull_request_creation_policy,omitempty" yaml:"pull_request_creation_policy,omitempty"`
 	AllowSquashMerge          *bool   `json:"allow_squash_merge,omitempty" yaml:"allow_squash_merge,omitempty"`
 	AllowMergeCommit          *bool   `json:"allow_merge_commit,omitempty" yaml:"allow_merge_commit,omitempty"`

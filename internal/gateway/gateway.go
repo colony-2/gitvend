@@ -485,8 +485,8 @@ func (s *Server) ensure(ctx context.Context, rt route, id *auth.Identity, create
 	}
 	if err := rt.provider.FinishCreation(ctx, repo); err != nil {
 		event.Outcome = "configuration_failed"
-		event.Reason = "repository exists but creation settings could not be confirmed"
-		return &httpError{502, "repository created but configuration incomplete; check repository settings before retrying"}
+		event.Reason = "repository exists but creation settings could not be confirmed: " + err.Error()
+		return &httpError{502, "repository created but configuration incomplete: " + err.Error() + "; check repository settings before retrying"}
 	}
 	if created {
 		event.Outcome = "created"

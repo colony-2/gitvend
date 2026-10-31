@@ -302,7 +302,6 @@ creation_defaults:
   has_issues: false
   has_projects: false
   has_wiki: false
-  has_pull_requests: false
 ```
 
 Supported settings use GitHub's field names:
@@ -310,7 +309,7 @@ Supported settings use GitHub's field names:
 | Settings | Values and behavior |
 | --- | --- |
 | `visibility` | `private` (default) or `public`. |
-| `has_issues`, `has_projects`, `has_wiki`, `has_pull_requests` | Optional booleans. An explicit `false` disables the feature; omission leaves GitHub's default. |
+| `has_issues`, `has_projects`, `has_wiki` | Optional booleans. An explicit `false` disables the feature; omission leaves GitHub's default. |
 | `description`, `homepage` | Optional strings applied to newly created repositories. |
 | `pull_request_creation_policy` | Optional `all` or `collaborators_only`. |
 | `allow_squash_merge`, `allow_merge_commit`, `allow_rebase_merge` | Optional booleans. At least one merge method must remain available. |
@@ -322,7 +321,7 @@ are not accepted. GitHub organization policies and upstream permissions can
 reject settings; these errors fail provisioning rather than silently changing
 requested options. See the [GitHub creation API](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository).
 
-Pull request availability and its creation policy use GitHub's
+When configured, `pull_request_creation_policy` uses GitHub's
 [repository update API](https://docs.github.com/en/rest/repos/repos#update-a-repository)
 after creation or successful name reconciliation, before forwarding discovery
 and the first push. The API credential must authorize these repository updates
@@ -332,6 +331,19 @@ its settings before retrying. These are creation defaults, not ongoing policy
 enforcement. An existing repository found by the initial lookup is left unchanged,
 including on a later retry or after a gateway restart. Gitvend does not store
 pending provisioning state or roll back repository creation.
+
+The error and audit reason include the failed settings step: an upstream HTTP
+status, an omitted response field, or a field that differs from the requested
+value. Raw upstream error bodies and credentials are not included. For a rejected
+update, check the API credential's access to the new repository and its permission
+to change settings (fine-grained GitHub tokens require **Administration: write**).
+For omitted or mismatched fields, check the repository's actual pull request
+settings and the upstream API's support for those fields. This failure occurs
+before Gitvend forwards discovery or the push; it does not publish the commit.
+Complete the settings on the existing repository before retrying the push:
+retrying alone does not repeat the settings update. Omitting
+`pull_request_creation_policy` skips this update for future repositories and
+accepts the forge's default policy.
 
 Defaults belong to the upstream provider, not to a JWT signing key or JobDB
 tenant. Different providers can use different tokens and defaults for distinct

@@ -13,11 +13,12 @@ func TestCreationDefaultsValidation(t *testing.T) {
 		valid          bool
 	}{
 		{"omitted settings", `{}`, true},
-		{"private features off", `{"visibility":"private","has_issues":false,"has_projects":false,"has_wiki":false,"has_pull_requests":false}`, true},
-		{"public features on", `{"visibility":"public","has_issues":true,"has_projects":true,"has_wiki":true,"has_pull_requests":true,"pull_request_creation_policy":"collaborators_only"}`, true},
+		{"private features off", `{"visibility":"private","has_issues":false,"has_projects":false,"has_wiki":false}`, true},
+		{"public features on", `{"visibility":"public","has_issues":true,"has_projects":true,"has_wiki":true,"pull_request_creation_policy":"collaborators_only"}`, true},
 		{"invalid visibility", `{"visibility":"internal"}`, false},
 		{"invalid PR policy", `{"pull_request_creation_policy":"nobody"}`, false},
 		{"no merge methods", `{"allow_squash_merge":false,"allow_merge_commit":false,"allow_rebase_merge":false}`, false},
+		{"removed PR switch", `{"has_pull_requests":false}`, false},
 		{"unknown option", `{"has_prs":false}`, false},
 		{"initial commit forbidden", `{"auto_init":true}`, false},
 		{"duplicate option", `{"has_issues":false,"has_issues":true}`, false},
@@ -43,13 +44,13 @@ func TestCreationDefaultsValidation(t *testing.T) {
 			}
 			if err == nil && tt.name == "private features off" {
 				d := got.Providers[0].CreationDefaults
-				if !d.Private() || d.HasIssues == nil || *d.HasIssues || d.HasPullRequests == nil || *d.HasPullRequests {
+				if !d.Private() || d.HasIssues == nil || *d.HasIssues {
 					t.Fatal("explicit false lost")
 				}
 			}
 			if err == nil && tt.name == "omitted settings" {
 				d := got.Providers[0].CreationDefaults
-				if !d.Private() || d.HasIssues != nil || d.HasPullRequests != nil {
+				if !d.Private() || d.HasIssues != nil {
 					t.Fatal("defaults changed")
 				}
 			}

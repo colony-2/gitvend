@@ -63,7 +63,7 @@ Setup:
      Both permission lists use normal Gitvend syntax. The sample :rwc permits
      read/write/create on that cell. Creation also requires allow_creation: true
      on the gateway provider; its creation_defaults controls visibility (private
-     by default), issues, projects, wiki and pull requests. Base-only requests
+     by default), issues, projects and wiki. Base-only requests
      need no cell metadata. Empty base/target lists disable the respective token.
 
      Workers use the JWT as the HTTP Basic password for the Gitvend gateway's

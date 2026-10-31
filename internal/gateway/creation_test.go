@@ -13,10 +13,11 @@ import (
 
 func TestCreationDefaultsBeforeFirstPush(t *testing.T) {
 	for _, tt := range []struct {
-		name                                      string
-		public, existing, lostResponse, failPatch bool
+		name                                                  string
+		public, existing, lostResponse, failPatch, omitPolicy bool
 	}{
 		{name: "private"},
+		{name: "public without PR policy", public: true, omitPolicy: true},
 		{name: "public", public: true},
 		{name: "lost create response", lostResponse: true},
 		{name: "settings failure", failPatch: true},
@@ -71,13 +72,16 @@ func TestCreationDefaultsBeforeFirstPush(t *testing.T) {
 				default:
 					t.Errorf("unexpected API request: %s", r.Method)
 				}
-				json.NewEncoder(w).Encode(map[string]any{"full_name": "org/" + name, "private": !tt.public, "has_pull_requests": false})
+				json.NewEncoder(w).Encode(map[string]any{"full_name": "org/" + name, "private": !tt.public, "pull_request_creation_policy": "collaborators_only"})
 			}))
 			defer api.Close()
 			provider := f.server.Providers["github"]
 			provider.Config.APIBaseURL = api.URL
 			off := false
-			provider.Config.CreationDefaults = config.CreationDefaults{HasIssues: &off, HasPullRequests: &off}
+			provider.Config.CreationDefaults = config.CreationDefaults{HasIssues: &off, HasProjects: &off, HasWiki: &off}
+			if !tt.omitPolicy {
+				provider.Config.CreationDefaults.PullRequestCreationPolicy = "collaborators_only"
+			}
 			if tt.public {
 				provider.Config.CreationDefaults.Visibility = "public"
 			}
@@ -88,10 +92,16 @@ func TestCreationDefaultsBeforeFirstPush(t *testing.T) {
 				if err == nil || f.pushes.Load() != 0 || patches.Load() != 1 {
 					t.Fatalf("incomplete provisioning forwarded push: %v %s", err, out)
 				}
+				if !strings.Contains(out, "update pull request settings: forge API status 503") {
+					t.Fatalf("missing settings failure diagnostic: %s", out)
+				}
 				found := false
 				for _, event := range f.events() {
 					if event.Operation == "repo.create" && event.Outcome == "configuration_failed" {
 						found = true
+						if !strings.Contains(event.Reason, "update pull request settings: forge API status 503") {
+							t.Errorf("missing audit diagnostic: %s", event.Reason)
+						}
 					}
 				}
 				if !found {
@@ -105,7 +115,11 @@ func TestCreationDefaultsBeforeFirstPush(t *testing.T) {
 				if tt.existing {
 					want = 0
 				}
-				if posts.Load() != want || patches.Load() != want {
+				wantPatches := want
+				if tt.omitPolicy {
+					wantPatches = 0
+				}
+				if posts.Load() != want || patches.Load() != wantPatches {
 					t.Fatalf("unexpected creation/settings calls: %d %d", posts.Load(), patches.Load())
 				}
 			}

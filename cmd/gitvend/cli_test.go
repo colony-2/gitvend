@@ -18,7 +18,7 @@ func TestCobraSetupHelp(t *testing.T) {
 		if err := run(args, nil, &out, &errout); err != nil || errout.Len() != 0 {
 			t.Fatalf("help: %v %s", err, errout.String())
 		}
-		for _, required := range []string{"GITHUB_TOKEN", "keygen --private", "gitvend.yaml", "public_key_file", "creation_defaults", "has_pull_requests", "gitvend validate", "gitvend sign", "credential --host", "protocol.version 2", "jobdb-gitvend-secret-provider", "completion"} {
+		for _, required := range []string{"GITHUB_TOKEN", "keygen --private", "gitvend.yaml", "public_key_file", "creation_defaults", "has_wiki", "gitvend validate", "gitvend sign", "credential --host", "protocol.version 2", "jobdb-gitvend-secret-provider", "completion"} {
 			if !strings.Contains(out.String(), required) {
 				t.Errorf("missing setup information: %s", required)
 			}

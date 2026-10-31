@@ -16,7 +16,6 @@ import (
 type Repository struct {
 	FullName                  string `json:"full_name"`
 	Private                   bool   `json:"private"`
-	HasPullRequests           *bool  `json:"has_pull_requests"`
 	PullRequestCreationPolicy string `json:"pull_request_creation_policy"`
 }
 type StatusError struct{ Status int }
@@ -100,7 +99,7 @@ func (g *GitHub) Lookup(ctx context.Context, path string) (Repository, error) {
 	return r, e
 }
 func (g *GitHub) Create(ctx context.Context, owner, name string) (Repository, error) {
-	// Use GitHub's native field names. PR availability is update-only and is
+	// Use GitHub's native field names. PR creation policy is update-only and is
 	// applied by FinishCreation after creation (or reconciliation) is confirmed.
 	b, err := json.Marshal(g.Config.CreationDefaults)
 	if err != nil {
@@ -111,7 +110,6 @@ func (g *GitHub) Create(ctx context.Context, owner, name string) (Repository, er
 		return Repository{}, err
 	}
 	delete(body, "visibility")
-	delete(body, "has_pull_requests")
 	delete(body, "pull_request_creation_policy")
 	body["name"], body["private"], body["auto_init"] = name, g.Config.CreationDefaults.Private(), false
 	r, e := g.call(ctx, "POST", "/orgs/"+owner+"/repos", body)
@@ -123,15 +121,14 @@ func (g *GitHub) Create(ctx context.Context, owner, name string) (Repository, er
 
 // FinishCreation applies update-only settings to a confirmed new repository.
 // It must not be called for repositories that existed before a create attempt.
+// Errors are surfaced to Git clients and audit logs; never include credentials,
+// raw upstream response bodies, or untrusted metadata values.
 func (g *GitHub) FinishCreation(ctx context.Context, repo Repository) error {
 	c := g.Config.CreationDefaults
 	if repo.Private != c.Private() {
 		return fmt.Errorf("repository visibility does not match creation profile")
 	}
 	body := map[string]any{}
-	if c.HasPullRequests != nil {
-		body["has_pull_requests"] = *c.HasPullRequests
-	}
 	if c.PullRequestCreationPolicy != "" {
 		body["pull_request_creation_policy"] = c.PullRequestCreationPolicy
 	}
@@ -140,12 +137,21 @@ func (g *GitHub) FinishCreation(ctx context.Context, repo Repository) error {
 	}
 	r, err := g.call(ctx, "PATCH", "/repos/"+repo.FullName, body)
 	if err != nil {
-		return err
+		return fmt.Errorf("update pull request settings: %w", err)
 	}
-	if !strings.EqualFold(r.FullName, repo.FullName) || r.Private != c.Private() ||
-		c.HasPullRequests != nil && (r.HasPullRequests == nil || *r.HasPullRequests != *c.HasPullRequests) ||
-		c.PullRequestCreationPolicy != "" && r.PullRequestCreationPolicy != c.PullRequestCreationPolicy {
-		return fmt.Errorf("repository does not match requested pull request settings")
+	if !strings.EqualFold(r.FullName, repo.FullName) {
+		return fmt.Errorf("forge repository identity mismatch after settings update")
+	}
+	if r.Private != c.Private() {
+		return fmt.Errorf("repository visibility does not match creation profile after settings update")
+	}
+	if c.PullRequestCreationPolicy != "" {
+		if r.PullRequestCreationPolicy == "" {
+			return fmt.Errorf("forge response omitted pull_request_creation_policy")
+		}
+		if r.PullRequestCreationPolicy != c.PullRequestCreationPolicy {
+			return fmt.Errorf("pull_request_creation_policy does not match requested value")
+		}
 	}
 	return nil
 }

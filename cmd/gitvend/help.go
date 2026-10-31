@@ -44,7 +44,6 @@ Setup:
              has_issues: false
              has_projects: false
              has_wiki: false
-             has_pull_requests: false
        denies:
          - "!github.com/myorg/*#(main|master):wd"
 

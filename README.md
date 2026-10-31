@@ -10,7 +10,7 @@ The gateway sits between agents and GitHub. It holds your upstream GitHub tokens
 checks each agent's signed permissions, and forwards authorized Git requests.
 You can configure different upstream tokens for different organizations, deny
 writes to protected branches, and control whether new repositories are created
-publicly or privately with issues, projects, wiki, and pull requests enabled.
+publicly or privately with issues, projects, and wiki enabled.
 
 The gateway supports GitHub and GitHub Enterprise-compatible endpoints. It needs
 no database or GitHub App. Agents connect over HTTPS; GitHub's own access and
