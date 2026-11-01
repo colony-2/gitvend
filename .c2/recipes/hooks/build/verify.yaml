@@ -1,0 +1,44 @@
+id: gitvend-build-verify
+input_schema:
+  api_version:
+    type: string
+    required: true
+  request:
+    type: string
+    required: true
+  target_directory:
+    type: string
+    required: true
+  candidate:
+    type: string
+    required: true
+  base:
+    type: string
+    required: true
+  documents:
+    type: artifact_map
+    default_value: {}
+  settings:
+    type: artifact
+    required: false
+inputs:
+  target_directory: ${{ inputs.target_directory }}
+  candidate: ${{ inputs.candidate }}
+sequence:
+- id: verify_candidate
+  op: command_execution
+  const: true
+  inputs:
+    env:
+      WORKTREE: ${{ context.environment.op.worktree_path }}
+      DIRECTORY: ${{ inputs.target_directory }}
+      CANDIDATE: ${{ inputs.candidate }}
+      OUTBOX: ${{ context.environment.op.outbox }}
+    run: |
+      set -eu
+      node "$WORKTREE/.c2/recipes/hooks/build/verify.mjs"
+outputs:
+  api_version: c2.build-hook/v1
+  status: ${{ json_parse(sequence.verify_candidate.outputs.stdout).status }}
+  summary: ${{ json_parse(sequence.verify_candidate.outputs.stdout).summary }}
+  artifact_refs: "${{ {'result.json': sequence.verify_candidate.artifacts['result.json'], 'evidence.json': sequence.verify_candidate.artifacts['evidence.json']} }}"

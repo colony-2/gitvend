@@ -1,0 +1,69 @@
+recipe: ../verify.yaml
+cases:
+- id: passed-contract
+  type: integration_case
+  inputs:
+    api_version: c2.build-hook/v1
+    request: Verify fixture candidate.
+    target_directory: .
+    candidate: fixture
+    base: fixture
+    documents: {}
+  mocks:
+    ops:
+    - match: {op: command_execution}
+      behavior:
+        mode: return
+        outputs:
+          stdout: '{"status":"passed","summary":"Five fixture checks passed."}'
+          stderr: ''
+          exit_code: 0
+        artifacts:
+          result.json: '{"status":"passed"}'
+          evidence.json: '{"fixture":true}'
+  assertions:
+  - {type: output_equals, path: api_version, value: c2.build-hook/v1}
+  - {type: output_equals, path: status, value: passed}
+  - {type: output_equals, path: summary, value: Five fixture checks passed.}
+  - type: cel_true
+    expr: '"result.json" in outputs.artifact_refs && "evidence.json" in outputs.artifact_refs'
+- id: failed-contract
+  type: integration_case
+  inputs:
+    api_version: c2.build-hook/v1
+    request: Verify failing fixture candidate.
+    target_directory: .
+    candidate: fixture
+    base: fixture
+  mocks:
+    ops:
+    - match: {op: command_execution}
+      behavior:
+        mode: return
+        outputs:
+          stdout: '{"status":"failed","summary":"Controlled fixture failure."}'
+          stderr: ''
+          exit_code: 0
+        artifacts:
+          result.json: '{"status":"failed"}'
+          evidence.json: '{"fixture":true,"exit":17}'
+  assertions:
+  - {type: output_equals, path: status, value: failed}
+  - type: cel_true
+    expr: '"result.json" in outputs.artifact_refs && "evidence.json" in outputs.artifact_refs'
+- id: operation-failure-blocks
+  type: integration_case
+  inputs:
+    api_version: c2.build-hook/v1
+    request: Verify finalization failure blocks.
+    target_directory: .
+    candidate: fixture
+    base: fixture
+  mocks:
+    ops:
+    - match: {op: command_execution}
+      behavior:
+        mode: fail
+        error:
+          message: command execution failed
+  expect_error: command execution failed
