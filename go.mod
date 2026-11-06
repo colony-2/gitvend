@@ -3,7 +3,7 @@ module github.com/colony-2/gitvend
 go 1.25.5
 
 require (
-	github.com/colony-2/jobdb v0.0.0-20261023001113-f403447cb58a
+	github.com/colony-2/jobdb v0.0.72
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/spf13/cobra v1.10.2

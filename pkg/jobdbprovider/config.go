@@ -22,8 +22,10 @@ type config struct {
 	MaxLifetimeSeconds   int                     `json:"max_lifetime_seconds" yaml:"max_lifetime_seconds"`
 	GatewayLeewaySeconds int                     `json:"gateway_leeway_seconds" yaml:"gateway_leeway_seconds"`
 	ClockMarginSeconds   int                     `json:"clock_margin_seconds" yaml:"clock_margin_seconds"`
-	CellMetadataField    string                  `json:"cell_metadata_field" yaml:"cell_metadata_field"`
 	Tenants              map[string]tenantConfig `json:"tenants" yaml:"tenants"`
+
+	// Deprecated: accepted for config compatibility, but never used for authority.
+	CellMetadataField string `json:"cell_metadata_field,omitempty" yaml:"cell_metadata_field,omitempty"`
 }
 
 type tenantConfig struct {
@@ -49,7 +51,7 @@ type Provider struct {
 
 func defaults() config {
 	return config{Audience: "gitvend", MaxTokenBytes: 4096, MaxLifetimeSeconds: 900,
-		GatewayLeewaySeconds: 30, ClockMarginSeconds: 1, CellMetadataField: "repo"}
+		GatewayLeewaySeconds: 30, ClockMarginSeconds: 1}
 }
 
 // Load reads and validates an issuer configuration and its Ed25519 signing key.
@@ -88,8 +90,8 @@ func Load(path string) (*Provider, error) {
 
 func newProvider(c config, key ed25519.PrivateKey, now func() time.Time) (*Provider, error) {
 	if c.Issuer == "" || c.Audience == "" || c.KeyID == "" || len(c.KeyID) > 128 ||
-		c.CellMetadataField == "" || len(c.Tenants) == 0 || len(key) != ed25519.PrivateKeySize || now == nil {
-		return nil, fmt.Errorf("issuer, audience, key, metadata field and tenants required")
+		len(c.Tenants) == 0 || len(key) != ed25519.PrivateKeySize || now == nil {
+		return nil, fmt.Errorf("issuer, audience, key and tenants required")
 	}
 	if c.MaxTokenBytes < 512 || c.MaxTokenBytes > 32768 || c.MaxLifetimeSeconds < 1 || c.MaxLifetimeSeconds > 86400 ||
 		c.GatewayLeewaySeconds < 0 || c.GatewayLeewaySeconds > 30 || c.ClockMarginSeconds < 0 || c.ClockMarginSeconds > 3600 {

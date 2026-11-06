@@ -17,7 +17,7 @@ It returns only requested, authorized secret names:
 
 These are signed JWT **tokens**, not signing keys. Both lists accept the standard
 [Gitvend permission syntax](permission-syntax.md), including `r`, `w`, `d`, `c`,
-ref selectors, and denies. A base-token request does not need cell metadata.
+ref selectors, and denies. A base-token request does not need cell context.
 Matching denies still win across both lists and the gateway's deny rules.
 
 ## Install
@@ -39,8 +39,10 @@ contain only the gateway; use a release that includes the plugin.
 The npm installer places a native executable at the plugin command path, so
 JobDB does not need Node.js or `PATH` in the plugin environment.
 
-Use a JobDB version with secret-provider plugin support. JobDB must be able to
-execute the installed command and read the issuer configuration and signing key.
+Use JobDB v0.0.72 or later, with verified cell context in its secret-provider
+plugin protocol. JobDB must be able to execute the installed command and read
+the issuer configuration and signing key. Older hosts can still receive base
+tokens, but cannot authorize cell tokens without verified cell context.
 
 ## Configure the issuer
 
@@ -62,7 +64,6 @@ issuer: jobdb
 audience: gitvend
 key_id: jobdb
 signing_key_file: signing.key
-cell_metadata_field: repo
 tenants:
   YOUR_TENANT_ID:
     base_permissions:
@@ -108,8 +109,8 @@ principals:
 
 `base_permissions` applies to both tokens, including the target repository.
 `target_permissions` grants additional authority only for the repository selected
-by metadata. For example, this tenant policy allows all accessible GitHub reads
-and read/write/create on the target cell if it belongs to `colony-2`:
+by verified cell ownership. For example, this tenant policy allows all accessible
+GitHub reads and read/write/create on the target cell if it belongs to `colony-2`:
 
 ```yaml
 base_permissions:
@@ -118,7 +119,7 @@ target_permissions:
   - github.com/colony-2/*:rwc
 ```
 
-For `AppMetadata.repo = "https://github.com/colony-2/my-cell.git"`, the cell JWT
+For `Lease.Cell.CellRepo = "github.com/colony-2/my-cell"`, the cell JWT
 contains `github.com/*:r` and `github.com/colony-2/my-cell:rwc`. It does not grant
 writes or creation to any other cell. A target rule such as
 `github.com/colony-2/*#work/*:rw` retains its branch selector after narrowing.
@@ -172,7 +173,7 @@ jobdb sqlite --db ./jobdb.db --secret-providers-file /absolute/path/to/providers
 ```
 
 Other providers, including SQLite, can coexist in the same provider file; the first entry for each secret name wins. See
-[the provider guide](https://github.com/colony-2/jobdb/blob/f403447cb58a7195e32a55fb7f417e09da70f388/docs/GUIDE-SECRET-PROVIDERS.md) for collection behavior.
+[the provider guide](https://github.com/colony-2/jobdb/blob/v0.0.72/docs/GUIDE-SECRET-PROVIDERS.md) for collection behavior.
 An omission here cannot veto a grant from a different provider.
 
 The worker requests either or both names through JobDB's normal secret-resolution
@@ -182,39 +183,47 @@ the gateway's Git URL, for example
 Follow the [agent authentication instructions](gateway.md#configure-git-authentication)
 to configure the Git credential helper.
 
-## Cell metadata and authorization
+## Cell ownership and authorization
 
-The default `cell_metadata_field` is `repo`, matching c2j's target repository
-metadata. It is a top-level field in `SecretResolveRequest.AppMetadata`, e.g.:
+Cell tokens use `SecretResolveRequest.Lease.Cell.CellRepo`, supplied by the
+JobDB broker from the job's stored cell ownership. The verified context includes
+a stable cell ID, a cell name, and a repository locator, for example:
 
 ```json
 {
-  "cell_id": "cell-123",
-  "cell_name": "cell-one",
-  "repo": "https://github.com/example-org/cell-one.git"
+  "cellId": "cell-123",
+  "cell": "cell-one",
+  "cellRepo": "github.com/example-org/cell-one"
 }
 ```
 
 Accepted repository forms are `https://host/owner/repo[.git]` and
 `host/owner/repo[.git]`. Owner/repository casing is normalized. Credentials, query
 strings, fragments, encoded paths, extra path segments and permission syntax are
-rejected. Configure a different field if your application uses another name;
-its value must still identify a repository, not an opaque cell ID. SSH URLs and
-cell-ID-to-repository lookups are not implemented.
+rejected. SSH URLs and cell-ID-to-repository lookups are not implemented.
 
 The provider matches that repository against the **verified tenant's** configured
 target rules, then replaces each matching rule's repository pattern with the
 exact repository while preserving its actions, ref selector and deny flag.
-Missing, malformed or unauthorized metadata omits the cell token while leaving
-an independently authorized base token available. Unknown names and tenants are
-also omitted.
+Missing verified cell ID, missing or malformed repository, an empty target list,
+or no matching target allow rule omits the cell token while leaving an independently
+authorized base token available. Unknown names and unauthorized tenants/principals
+are also omitted.
 
-Application metadata may be submitter-controlled. The configured target patterns
-are an authorization ceiling: authorized jobs in that tenant may select any
-matching cell. If individual jobs or principals must be confined to different
-cells within a tenant, a trusted job/principal-to-cell authorization lookup is
-needed before widening this model. Metadata by itself does not establish such
-a binding. `cell_id` and `cell_name` do not override `repo`.
+`AppMetadata` is never used to select a repository, even if verified cell context
+is missing. Conflicting `repo`, `cellRepo`, cell IDs or names in application
+metadata cannot override the verified cell. The deprecated `cell_metadata_field`
+configuration option is accepted for compatibility but ignored; remove it from
+new configurations. Jobs no longer need legacy repository metadata.
+
+When a requested cell token is omitted, the provider emits a fixed diagnostic to
+stderr identifying the missing cell context or tenant/principal/target-policy
+condition. The JobDB CLI forwards it to the provider log. Diagnostics contain no
+raw request fields, metadata, credentials or configuration values. The plugin
+protocol has no per-secret diagnostic field and redacts error details, so these
+reasons are available in the host log rather than the secret response. Library
+embedders can capture them through Go's default `slog` logger; hosts using the
+plugin SDK must configure `ProcessConfig.Logger` to forward process output.
 
 ## Private repository reads
 
@@ -273,8 +282,8 @@ new path and key ID; provision the corresponding gateway public key beforehand.
 Reloading does not revoke already issued JWTs or replace credentials cached by
 JobDB workflows. Use fresh secret resolution to obtain updated permissions.
 Diagnostics go to stderr without keys, JWTs, raw configuration, or raw errors;
-the JobDB host may suppress plugin output. Watching uses local filesystem events,
-with no periodic polling after successful loads. Network filesystems and changes
+the JobDB CLI forwards them to its provider log. Watching uses local filesystem
+events, with no periodic polling after successful loads. Network filesystems and changes
 to symlink targets outside the watched directories require a different update
 mechanism or restarting the plugin host.
 
@@ -295,7 +304,7 @@ mechanism or restarting the plugin host.
 | Command is missing after npm install | Use a release that includes the plugin, check `PATH`, and ensure npm install scripts ran. After fixing download/install-script errors, run `npm rebuild @colony2/gitvend`. |
 | Configuration validation fails | Check YAML field names, permission syntax, tenant IDs, and the signing-key path relative to the issuer file. |
 | Neither token is returned | Check the verified tenant/principal, requested secret names, and job lease authority. Unknown names and unauthorized tenants are omitted. |
-| Base token works but cell token is missing | Check `AppMetadata.repo`, `cell_metadata_field`, and whether a target allow rule matches that exact repository. |
+| Base token works but cell token is missing | Check the provider log's `gitvend_cell_token unavailable` diagnostic, verified `Lease.Cell.CellID`/`CellRepo`, and whether a target allow rule matches that exact repository. Upgrade older JobDB hosts to pass cell context; application metadata cannot substitute for it. |
 | Gateway rejects a token | Check issuer, key ID, audience, signing key, clock tolerance, lifetime limits, and gateway owner allowlists. |
 | Cell push cannot create a repository | The target rules need `c` plus a readable/writable branch. Check the gateway's `allow_creation`, upstream permissions, and creation settings. |
 | Config changed but a worker still has old permissions | Obtain fresh secrets through JobDB. Already issued JWTs retain their permissions until expiry, and invalid replacements leave the last valid config active. |

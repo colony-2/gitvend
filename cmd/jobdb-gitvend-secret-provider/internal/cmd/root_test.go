@@ -32,7 +32,7 @@ func TestHelpExplainsSetupWithoutLoadingConfiguration(t *testing.T) {
 			for _, required := range []string{
 				commandName, "gitvend keygen", "signing_key_file", "base_permissions",
 				"target_permissions", "validate --config", "providers.json", "--secret-providers-file",
-				"gitvend_base_token", "gitvend_cell_token", "AppMetadata.repo", "completion",
+				"gitvend_base_token", "gitvend_cell_token", "Lease.Cell.CellRepo", "completion",
 				"creation_defaults", "allow_creation", "Migration:",
 			} {
 				if !strings.Contains(out, required) {

@@ -6,13 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/colony-2/gitvend/internal/auth"
 	gitconfig "github.com/colony-2/gitvend/internal/config"
-	"github.com/colony-2/gitvend/internal/jsonutil"
 	"github.com/colony-2/gitvend/internal/policy"
 	"github.com/colony-2/jobdb/pkg/jobdb"
 	"github.com/golang-jwt/jwt/v5"
@@ -33,7 +34,16 @@ func (p *Provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequ
 		return jobdb.SecretResolveResult{}, err
 	}
 	t, ok := p.tenants[r.TenantID]
-	if !ok || len(t.principals) > 0 && (r.Principal == nil || !t.principals[*r.Principal]) {
+	if !ok {
+		if slices.Contains(r.Names, CellSecretName) {
+			cellTokenUnavailable(ctx, "tenant is not configured")
+		}
+		return out, nil
+	}
+	if len(t.principals) > 0 && (r.Principal == nil || !t.principals[*r.Principal]) {
+		if slices.Contains(r.Names, CellSecretName) {
+			cellTokenUnavailable(ctx, "principal is not authorized for this tenant")
+		}
 		return out, nil
 	}
 	for _, name := range r.Names {
@@ -48,8 +58,23 @@ func (p *Provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequ
 		}
 		permissions := append([]string(nil), t.base...)
 		if name == CellSecretName {
-			repo, ok := cellRepository(r.AppMetadata, p.config.CellMetadataField)
-			if !ok || t.target == nil {
+			// Only the broker-verified cell establishes the job's repository.
+			// Application metadata must neither override it nor supply a fallback.
+			if r.Lease.Cell.CellID == "" {
+				cellTokenUnavailable(ctx, "verified Lease.Cell.CellID is missing; use a JobDB host with cell context support")
+				continue
+			}
+			if r.Lease.Cell.CellRepo == "" {
+				cellTokenUnavailable(ctx, "verified Lease.Cell.CellRepo is missing")
+				continue
+			}
+			repo, ok := cellRepository(r.Lease.Cell.CellRepo)
+			if !ok {
+				cellTokenUnavailable(ctx, "verified Lease.Cell.CellRepo is not a supported repository locator")
+				continue
+			}
+			if t.target == nil {
+				cellTokenUnavailable(ctx, "no target_permissions configured for this tenant")
 				continue
 			}
 			// Retain actions, ref selectors and denies, narrowing only the repository.
@@ -61,6 +86,7 @@ func (p *Provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequ
 				}
 			}
 			if !matchedAllow {
+				cellTokenUnavailable(ctx, "no target_permissions allow rule matches the verified cell repository")
 				continue
 			}
 		}
@@ -81,6 +107,13 @@ func (p *Provider) ResolveSecrets(ctx context.Context, r jobdb.SecretResolveRequ
 		return jobdb.SecretResolveResult{}, err
 	}
 	return out, nil
+}
+
+// JobDB's result has no per-name diagnostics and its SDK redacts error details.
+// Keep omissions independent of other secrets and report only fixed messages on
+// stderr, which the JobDB host forwards to its provider log.
+func cellTokenUnavailable(ctx context.Context, reason string) {
+	slog.WarnContext(ctx, CellSecretName+" unavailable: "+reason)
 }
 
 func (p *Provider) issue(r jobdb.SecretResolveRequest, permissions []string) (jobdb.SecretValue, error) {
@@ -121,16 +154,7 @@ func (p *Provider) issue(r jobdb.SecretResolveRequest, permissions []string) (jo
 	return jobdb.SecretValue{Value: token, ExpiresAt: &expiry, LeaseBound: true}, nil
 }
 
-func cellRepository(metadata json.RawMessage, field string) (policy.Repository, bool) {
-	var fields map[string]json.RawMessage
-	// Other metadata belongs to the application; accept it while rejecting duplicate keys.
-	if len(metadata) > 1<<20 || jsonutil.Decode(metadata, &fields) != nil {
-		return policy.Repository{}, false
-	}
-	var source string
-	if json.Unmarshal(fields[field], &source) != nil {
-		return policy.Repository{}, false
-	}
+func cellRepository(source string) (policy.Repository, bool) {
 	if strings.HasPrefix(source, "https://") {
 		u, err := url.Parse(source)
 		if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(source, "#") || u.RawPath != "" || u.Opaque != "" {

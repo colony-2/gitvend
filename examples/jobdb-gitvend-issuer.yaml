@@ -7,7 +7,6 @@ max_token_bytes: 4096
 max_lifetime_seconds: 900
 gateway_leeway_seconds: 30
 clock_margin_seconds: 1
-cell_metadata_field: repo
 tenants:
   example:
     base_permissions:

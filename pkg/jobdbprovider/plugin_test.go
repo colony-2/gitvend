@@ -1,14 +1,38 @@
 package jobdbprovider
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/colony-2/gitvend/internal/policy"
+	"github.com/colony-2/jobdb/pkg/jobdb"
 	secretplugin "github.com/colony-2/jobdb/pkg/jobdb/secrets/plugin"
 )
+
+type pluginDiagnostics struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (d *pluginDiagnostics) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.b.Write(p)
+}
+
+func (d *pluginDiagnostics) String() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.b.String()
+}
 
 func TestExecutableJobDBHandshake(t *testing.T) {
 	if testing.Short() {
@@ -22,7 +46,9 @@ func TestExecutableJobDBHandshake(t *testing.T) {
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", binary, "github.com/colony-2/gitvend/cmd/jobdb-gitvend-secret-provider").CombinedOutput(); err != nil {
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
-	process, err := secretplugin.Start(ctx, secretplugin.ProcessConfig{Command: binary, Args: []string{"--config", configPath}})
+	var diagnostics pluginDiagnostics
+	process, err := secretplugin.Start(ctx, secretplugin.ProcessConfig{Command: binary, Args: []string{"--config", configPath},
+		Logger: slog.New(slog.NewTextHandler(&diagnostics, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +74,29 @@ func TestExecutableJobDBHandshake(t *testing.T) {
 			t.Fatal("plugin token exceeds presenting lease authority")
 		}
 	}
+	// Both the cell context and the authority boundary must survive the subprocess wire.
+	request.AppMetadata = json.RawMessage(`{"repo":"github.com/acme/alpha-two","cellRepo":"github.com/acme/alpha-two"}`)
+	out, err = process.ResolveSecrets(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := verify(t, verifier, out.Secrets[CellSecretName])
+	for _, path := range []string{"acme/alpha-one", "acme/alpha-two"} {
+		repo := policy.Repository{Host: "github.com", Path: path}
+		if cell.Policy.Write(repo, "refs/heads/main", "ref.update") != (path == "acme/alpha-one") {
+			t.Fatalf("plugin metadata overrode verified cell: %s", path)
+		}
+	}
+	verifiedCell := request.Lease.Cell
+	request.Lease.Cell = jobdb.ResolvedCell{}
+	out, err = process.ResolveSecrets(ctx, request)
+	if err != nil || len(out.Secrets) != 1 || out.Secrets[BaseSecretName].Value == "" {
+		t.Fatalf("missing cell context must omit only the cell token: %v", err)
+	}
+	eventually(t, func() bool {
+		return strings.Contains(diagnostics.String(), "gitvend_cell_token unavailable: verified Lease.Cell.CellID is missing")
+	})
+	request.Lease.Cell = verifiedCell
 	request.TenantID = "unknown"
 	out, err = process.ResolveSecrets(ctx, request)
 	if err != nil || len(out.Secrets) != 0 {

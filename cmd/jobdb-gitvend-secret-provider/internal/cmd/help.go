@@ -55,16 +55,21 @@ Setup:
 
   5. Jobs request gitvend_base_token or gitvend_cell_token. Both receive
      base_permissions. The cell token adds matching target_permissions narrowed
-     to the exact repository in AppMetadata.repo (configurable via
-     cell_metadata_field), preserving actions, ref selectors and denies. Example:
+     to the verified Lease.Cell.CellRepo, preserving actions, ref selectors
+     and denies. JobDB supplies this context from stored cell ownership:
 
-       {"repo":"https://github.com/example-org/cell-one.git"}
+       {"cellId":"cell-123","cell":"cell-one","cellRepo":"github.com/example-org/cell-one"}
+
+     Use JobDB v0.0.72 or later to pass cell context. Application metadata cannot
+     override or substitute for that context. The legacy cell_metadata_field
+     option is accepted but ignored. Missing cell ID/repository or unmatched
+     target rules omit the cell token and report a diagnostic in JobDB's provider log.
 
      Both permission lists use normal Gitvend syntax. The sample :rwc permits
      read/write/create on that cell. Creation also requires allow_creation: true
      on the gateway provider; its creation_defaults controls visibility (private
      by default), issues, projects and wiki. Base-only requests
-     need no cell metadata. Empty base/target lists disable the respective token.
+     need no cell context. Empty base/target lists disable the respective token.
 
      Workers use the JWT as the HTTP Basic password for the Gitvend gateway's
      repository URL. Fetches use Git protocol v2. Tokens expire within verified

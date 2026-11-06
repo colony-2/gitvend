@@ -1,11 +1,15 @@
 package jobdbprovider
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,8 +43,8 @@ func testProvider(t *testing.T) (*Provider, *auth.Verifier, jobdb.SecretResolveR
 	v := &auth.Verifier{Audience: "gitvend", MaxBytes: 4096, MaxLifetime: 15 * time.Minute, Leeway: 30 * time.Second,
 		Now: func() time.Time { return now }, Keys: map[string]auth.Key{"jobdb-key": {Issuer: "jobdb", Public: pub, Owners: map[string][]string{"github.com": {"*"}}}}}
 	r := jobdb.SecretResolveRequest{TenantID: "alpha", JobID: "job-1", Names: []string{BaseSecretName, CellSecretName, "unrelated"},
-		AppMetadata: json.RawMessage(`{"cell_id":"123","cell_name":"alpha-one","repo":"https://github.com/Acme/Alpha-one.git","git_ref":"main","v":1}`),
-		Lease:       jobdb.SecretLeaseContext{LeaseID: "lease-1", WorkerID: "worker-1", LeaseExpiresAt: now.Add(10 * time.Minute), AuthorizedNotAfter: now.Add(5 * time.Minute)}}
+		Lease: jobdb.SecretLeaseContext{Cell: jobdb.ResolvedCell{CellID: "cell-1", Cell: "alpha-one", CellRepo: "github.com/acme/alpha-one"},
+			LeaseID: "lease-1", WorkerID: "worker-1", LeaseExpiresAt: now.Add(10 * time.Minute), AuthorizedNotAfter: now.Add(5 * time.Minute)}}
 	return p, v, r
 }
 
@@ -65,7 +69,7 @@ func verify(t *testing.T, v *auth.Verifier, value jobdb.SecretValue) *auth.Ident
 	return id
 }
 
-func TestRequestedTokensEnforceReadAndExactCellGrants(t *testing.T) {
+func TestFormalCellWithoutMetadataEnforcesReadAndExactCellGrants(t *testing.T) {
 	p, v, r := testProvider(t)
 	out := resolve(t, p, r)
 	if len(out.Secrets) != 2 {
@@ -90,8 +94,8 @@ func TestRequestedTokensEnforceReadAndExactCellGrants(t *testing.T) {
 	if read.Claims.ID == cell.Claims.ID || read.Claims.PolicyRevision != "policy-1" {
 		t.Fatal("token ID or policy revision not preserved")
 	}
-	// A read-only request needs no cell metadata and must never return a cell credential.
-	r.Names, r.AppMetadata = []string{BaseSecretName}, nil
+	// A base-only request needs no cell context and must never return a cell credential.
+	r.Names, r.Lease.Cell = []string{BaseSecretName}, jobdb.ResolvedCell{}
 	if out := resolve(t, p, r); len(out.Secrets) != 1 || out.Secrets[BaseSecretName].Value == "" {
 		t.Fatal("read-only resolution failed")
 	}
@@ -133,10 +137,12 @@ func TestTenantAndPrincipalAuthorization(t *testing.T) {
 	}
 }
 
-func TestUntrustedCellMetadata(t *testing.T) {
-	p, _, r := testProvider(t)
+func TestVerifiedCellIgnoresApplicationMetadata(t *testing.T) {
+	p, v, r := testProvider(t)
 	for _, metadata := range []string{
-		`{}`, `null`, `[]`, `{"repo":null}`, `{"repo":123}`, `{"repo":`,
+		``, `{}`, `null`, `[]`, `{"repo":null}`, `{"repo":123}`, `{"repo":`,
+		`{"cell_id":"other-cell","cell_name":"alpha-two","repo":"github.com/acme/alpha-two"}`,
+		`{"cell":"alpha-two","cellRepo":"github.com/acme/alpha-two"}`,
 		`{"repo":"github.com/acme/alpha-one","repo":"github.com/acme/beta-one"}`,
 		`{"repo":"github.com/acme/alpha-one"} {}`,
 		`{"repo":"github.com/acme/*"}`, `{"repo":"github.com/acme/alpha-one:rw"}`,
@@ -150,8 +156,114 @@ func TestUntrustedCellMetadata(t *testing.T) {
 		t.Run(metadata, func(t *testing.T) {
 			r.AppMetadata = json.RawMessage(metadata)
 			out := resolve(t, p, r)
+			if len(out.Secrets) != 2 {
+				t.Fatal("application metadata prevented verified cell issuance")
+			}
+			cell := verify(t, v, out.Secrets[CellSecretName])
+			want := []string{"github.com/*:r", "github.com/acme/alpha-one:rw"}
+			if !reflect.DeepEqual(cell.Claims.Grant.Permissions, want) {
+				t.Fatalf("metadata changed cell permissions: %v", cell.Claims.Grant.Permissions)
+			}
+		})
+	}
+}
+
+func TestCellRepositoryForms(t *testing.T) {
+	p, v, r := testProvider(t)
+	for _, source := range []string{
+		"github.com/acme/alpha-one", "github.com/Acme/Alpha-one.git",
+		"https://github.com/Acme/Alpha-one", "https://github.com/Acme/Alpha-one.git",
+	} {
+		t.Run(source, func(t *testing.T) {
+			r.Lease.Cell.CellRepo = source
+			cell := verify(t, v, resolve(t, p, r).Secrets[CellSecretName])
+			if !reflect.DeepEqual(cell.Claims.Grant.Permissions, []string{"github.com/*:r", "github.com/acme/alpha-one:rw"}) {
+				t.Fatalf("cell repository not normalized: %v", cell.Claims.Grant.Permissions)
+			}
+		})
+	}
+}
+
+func TestInvalidVerifiedCellRepositoryDoesNotFallBackToMetadata(t *testing.T) {
+	p, _, r := testProvider(t)
+	r.AppMetadata = json.RawMessage(`{"repo":"github.com/acme/alpha-one"}`)
+	for _, source := range []string{
+		"github.com/acme/*", "github.com/acme/alpha-one:rw",
+		"github.com/acme/alpha-one#main", "github.com/acme/../alpha-one",
+		"https://github.com/acme/alpha-one?x=1", "https://github.com/acme/alpha-one?",
+		"https://github.com/acme/alpha-one#", "https://github.com/acme/alpha-one#main",
+		"https://user@github.com/acme/alpha-one", "https://github.com/acme/alpha%2Done",
+		"http://github.com/acme/alpha-one", "git@github.com:acme/alpha-one.git",
+	} {
+		t.Run(source, func(t *testing.T) {
+			r.Lease.Cell.CellRepo = source
+			out := resolve(t, p, r)
 			if len(out.Secrets) != 1 || out.Secrets[BaseSecretName].Value == "" {
-				t.Fatal("invalid cell should omit only the cell token")
+				t.Fatal("invalid verified repository should omit only the cell token")
+			}
+		})
+	}
+}
+
+func TestUnavailableCellTokenDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mutate     func(*config, *jobdb.SecretResolveRequest)
+		diagnostic string
+		base       bool
+	}{
+		{"missing cell context", func(_ *config, r *jobdb.SecretResolveRequest) { r.Lease.Cell = jobdb.ResolvedCell{} }, "Lease.Cell.CellID is missing", true},
+		{"missing cell ID", func(_ *config, r *jobdb.SecretResolveRequest) { r.Lease.Cell.CellID = "" }, "Lease.Cell.CellID is missing", true},
+		{"missing repository", func(_ *config, r *jobdb.SecretResolveRequest) { r.Lease.Cell.CellRepo = "" }, "Lease.Cell.CellRepo is missing", true},
+		{"invalid repository", func(_ *config, r *jobdb.SecretResolveRequest) {
+			r.Lease.Cell.CellRepo = "https://private-secret-canary@github.com/acme/alpha-one"
+		}, "Lease.Cell.CellRepo is not a supported repository locator", true},
+		{"unmatched repository", func(_ *config, r *jobdb.SecretResolveRequest) { r.Lease.Cell.CellRepo = "github.com/acme/beta-one" }, "no target_permissions allow rule matches", true},
+		{"no target rules", func(c *config, _ *jobdb.SecretResolveRequest) {
+			c.Tenants["alpha"] = tenantConfig{BasePermissions: []string{"github.com/*:r"}}
+		}, "no target_permissions configured", true},
+		{"deny-only target rules", func(c *config, _ *jobdb.SecretResolveRequest) {
+			c.Tenants["alpha"] = tenantConfig{BasePermissions: []string{"github.com/*:r"}, TargetPermissions: []string{"!github.com/acme/*:rw"}}
+		}, "no target_permissions allow rule matches", true},
+		{"unknown tenant", func(_ *config, r *jobdb.SecretResolveRequest) { r.TenantID = "private-secret-canary" }, "tenant is not configured", false},
+		{"unauthorized principal", func(c *config, r *jobdb.SecretResolveRequest) {
+			c.Tenants["alpha"] = tenantConfig{BasePermissions: []string{"github.com/*:r"}, Principals: []string{"trusted"}}
+			principal := "private-secret-canary"
+			r.Principal = &principal
+		}, "principal is not authorized", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diagnostics bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&diagnostics, nil)))
+			t.Cleanup(func() { slog.SetDefault(old) })
+			p, v, r := testProvider(t)
+			// Valid legacy metadata must never substitute for missing or denied cell ownership.
+			r.AppMetadata = json.RawMessage(`{"repo":"github.com/acme/alpha-one","secret":"private-secret-canary"}`)
+			c := testConfig()
+			tc.mutate(&c, &r)
+			p, err := newProvider(c, p.key, p.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := resolve(t, p, r)
+			if _, ok := out.Secrets[CellSecretName]; ok {
+				t.Fatal("unavailable cell token issued")
+			}
+			if base, ok := out.Secrets[BaseSecretName]; ok != tc.base {
+				t.Fatal("base-token authorization changed")
+			} else if ok {
+				verify(t, v, base)
+			}
+			message := diagnostics.String()
+			if !strings.Contains(message, CellSecretName+" unavailable") || !strings.Contains(message, tc.diagnostic) || strings.Contains(message, "private-secret-canary") {
+				t.Fatalf("missing or unsafe diagnostic: %s", message)
+			}
+			diagnostics.Reset()
+			r.Names = []string{BaseSecretName, "unrelated"}
+			resolve(t, p, r)
+			if diagnostics.Len() != 0 {
+				t.Fatal("cell diagnostic emitted when cell token was not requested")
 			}
 		})
 	}

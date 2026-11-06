@@ -7,6 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -46,7 +47,6 @@ func TestLoadAndConfigurationValidation(t *testing.T) {
 		func(c *config) { c.Issuer = "" },
 		func(c *config) { c.Audience = "" },
 		func(c *config) { c.KeyID = "" },
-		func(c *config) { c.CellMetadataField = "" },
 		func(c *config) { c.MaxTokenBytes = 32769 },
 		func(c *config) { c.MaxLifetimeSeconds = 86401 },
 		func(c *config) { c.GatewayLeewaySeconds = -1 },
@@ -84,7 +84,7 @@ func TestLoadAndConfigurationValidation(t *testing.T) {
 	}
 }
 
-func TestCustomMetadataFieldAndReadDenies(t *testing.T) {
+func TestLegacyMetadataFieldIsIgnoredAndReadDeniesPreserved(t *testing.T) {
 	p, v, r := testProvider(t)
 	c := testConfig()
 	c.CellMetadataField = "target_cell"
@@ -98,10 +98,14 @@ func TestCustomMetadataFieldAndReadDenies(t *testing.T) {
 	}
 	// Changing source configuration after initialization must not change authority.
 	c.Tenants["alpha"].BasePermissions[1] = "github.com/*:rw"
-	r.AppMetadata = json.RawMessage(`{"target_cell":"github.com/acme/alpha-one"}`)
+	r.AppMetadata = json.RawMessage(`{"target_cell":"github.com/acme/alpha-two"}`)
 	out := resolve(t, p, r)
 	cell := verify(t, v, out.Secrets[CellSecretName])
-	repo, ok := cellRepository(r.AppMetadata, "target_cell")
+	want := []string{"github.com/*:r", "!github.com/acme/alpha-one:r", "github.com/acme/alpha-one:rw"}
+	if !reflect.DeepEqual(cell.Claims.Grant.Permissions, want) {
+		t.Fatalf("legacy metadata field changed permissions: %v", cell.Claims.Grant.Permissions)
+	}
+	repo, ok := cellRepository(r.Lease.Cell.CellRepo)
 	if !ok || cell.Policy.Read(repo) || cell.Policy.Write(repo, "refs/heads/main", "ref.update") {
 		t.Fatal("cell grant overrode tenant deny")
 	}
