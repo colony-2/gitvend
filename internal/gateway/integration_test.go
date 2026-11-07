@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,8 @@ type fixture struct {
 	repos                              map[string]int64
 	nextID                             int64
 	pushes, creates, created, apiCalls atomic.Int32
+	upstreamCalls                      atomic.Int32
+	gitPaths                           []string
 	denyCreate                         bool
 	createStarted                      chan<- struct{}
 	createRelease                      <-chan struct{}
@@ -96,6 +99,7 @@ func newFixture(t *testing.T) *fixture {
 	execPath := git(t, f.root, "--exec-path")
 	backend := &cgi.Handler{Path: filepath.Join(execPath, "git-http-backend"), Env: []string{"GIT_PROJECT_ROOT=" + f.root, "GIT_HTTP_EXPORT_ALL=1", "REMOTE_USER=gitvend"}}
 	f.upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.upstreamCalls.Add(1)
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if r.Header.Get("Authorization") != "Bearer upstream-secret" {
 				http.Error(w, "bad credential", 401)
@@ -104,6 +108,9 @@ func newFixture(t *testing.T) *fixture {
 			f.api(w, r)
 			return
 		}
+		f.mu.Lock()
+		f.gitPaths = append(f.gitPaths, r.Method+" "+r.URL.RequestURI())
+		f.mu.Unlock()
 		_, pw, ok := r.BasicAuth()
 		if !ok || pw != "upstream-secret" {
 			http.Error(w, "bad credential", 401)
@@ -237,97 +244,111 @@ func (f *fixture) request(method, path, token, protocol string, body []byte) *ht
 	return resp
 }
 func TestRealGitReadAndWrite(t *testing.T) {
-	f := newFixture(t)
-	out, e := gitRun(f.root, f.token, "ls-remote", f.url)
-	if e != nil {
-		t.Fatal(e, out)
-	}
-	if strings.Contains(out, "secret") || !strings.Contains(out, "refs/heads/main") {
-		t.Fatal(out)
-	}
-	clone := filepath.Join(f.root, "clone")
-	out, e = gitRun(f.root, f.token, "clone", "--branch", "main", f.url, clone)
-	if e != nil {
-		t.Fatal(e, out)
-	}
-	os.WriteFile(filepath.Join(clone, "change"), []byte("agent"), 0600)
-	git(t, clone, "add", ".")
-	git(t, clone, "commit", "-m", "agent change")
-	out, e = gitRun(clone, f.token, "push", "origin", "HEAD:refs/heads/agents/a/task")
-	if e != nil {
-		events := f.events()
-		for _, ev := range events {
-			t.Logf("audit: %+v", ev)
-		}
-		t.Fatal(e, out)
-	}
-	if f.pushes.Load() != 1 {
-		t.Fatal(f.pushes.Load())
-	}
-	before := f.pushes.Load()
-	out, e = gitRun(clone, f.token, "push", "origin", "HEAD:refs/heads/main")
-	if e == nil || f.pushes.Load() != before {
-		t.Fatal("forbidden push reached upstream", e, out)
-	}
-	out, e = gitRun(clone, f.token, "push", "origin", "HEAD:refs/heads/agents/a/other", "HEAD:refs/heads/secret")
-	if e == nil || f.pushes.Load() != before {
-		t.Fatal("mixed push reached upstream", e, out)
-	}
-	out, e = gitRun(clone, f.token, "fetch", "origin", f.secretID)
-	if e != nil {
-		t.Fatal("known hash fetch", e, out)
-	}
-	out, e = gitRun(clone, f.token, "push", "origin", ":refs/heads/agents/a/task")
-	if e != nil {
-		t.Fatal("allowed delete", e, out)
-	}
-	events := f.events()
-	accepted := false
-	denied := false
-	for _, ev := range events {
-		if ev.Operation == "git-receive-pack" && ev.Updates != nil {
-			accepted = accepted || ev.Outcome == "accepted"
-			denied = denied || ev.Outcome == "rejected"
-		}
-	}
-	if !accepted || !denied {
-		b, _ := json.Marshal(events)
-		t.Fatal(string(b))
-	}
-}
-func TestCreateFirstPushAndConcurrency(t *testing.T) {
-	f := newFixture(t)
-	token := f.sign("github.com/org/scratch-*:c", "github.com/org/scratch-*#agents/a/*:rw")
-	url := f.proxy.URL + "/github/org/scratch-one.git"
-	out, e := gitRun(f.work, token, "push", url, "HEAD:refs/heads/agents/a/first")
-	if e != nil {
-		t.Fatal(e, out)
-	}
-	if f.creates.Load() != 1 || f.pushes.Load() != 1 {
-		t.Fatal(f.creates.Load(), f.pushes.Load())
-	}
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Go(func() {
-			resp := f.request("GET", "/github/org/scratch-two.git/info/refs?service=git-receive-pack", token, "", nil)
-			defer resp.Body.Close()
-			if resp.StatusCode != 200 {
-				b, _ := io.ReadAll(resp.Body)
-				t.Errorf("discovery %d %s", resp.StatusCode, b)
+	for _, suffix := range []string{".git", ""} {
+		t.Run("suffix="+suffix, func(t *testing.T) {
+			f := newFixture(t)
+			f.url = strings.TrimSuffix(f.url, ".git") + suffix
+			out, e := gitRun(f.root, f.token, "ls-remote", f.url)
+			if e != nil {
+				t.Fatal(e, out)
 			}
+			if strings.Contains(out, "secret") || !strings.Contains(out, "refs/heads/main") {
+				t.Fatal(out)
+			}
+			clone := filepath.Join(f.root, "clone")
+			out, e = gitRun(f.root, f.token, "clone", "--branch", "main", f.url, clone)
+			if e != nil {
+				t.Fatal(e, out)
+			}
+			os.WriteFile(filepath.Join(clone, "change"), []byte("agent"), 0600)
+			git(t, clone, "add", ".")
+			git(t, clone, "commit", "-m", "agent change")
+			out, e = gitRun(clone, f.token, "push", "origin", "HEAD:refs/heads/agents/a/task")
+			if e != nil {
+				events := f.events()
+				for _, ev := range events {
+					t.Logf("audit: %+v", ev)
+				}
+				t.Fatal(e, out)
+			}
+			if f.pushes.Load() != 1 {
+				t.Fatal(f.pushes.Load())
+			}
+			before := f.pushes.Load()
+			out, e = gitRun(clone, f.token, "push", "origin", "HEAD:refs/heads/main")
+			if e == nil || f.pushes.Load() != before {
+				t.Fatal("forbidden push reached upstream", e, out)
+			}
+			out, e = gitRun(clone, f.token, "push", "origin", "HEAD:refs/heads/agents/a/other", "HEAD:refs/heads/secret")
+			if e == nil || f.pushes.Load() != before {
+				t.Fatal("mixed push reached upstream", e, out)
+			}
+			out, e = gitRun(clone, f.token, "fetch", "origin", f.secretID)
+			if e != nil {
+				t.Fatal("known hash fetch", e, out)
+			}
+			out, e = gitRun(clone, f.token, "push", "origin", ":refs/heads/agents/a/task")
+			if e != nil {
+				t.Fatal("allowed delete", e, out)
+			}
+			events := f.events()
+			accepted := false
+			denied := false
+			for _, ev := range events {
+				if ev.Operation == "git-receive-pack" && ev.Updates != nil {
+					accepted = accepted || ev.Outcome == "accepted"
+					denied = denied || ev.Outcome == "rejected"
+				}
+			}
+			if !accepted || !denied {
+				b, _ := json.Marshal(events)
+				t.Fatal(string(b))
+			}
+
 		})
 	}
-	wg.Wait()
-	if f.created.Load() != 2 {
-		t.Fatal("duplicate creation", f.created.Load())
-	}
-	before := f.creates.Load()
-	read := f.request("GET", "/github/org/scratch-three.git/info/refs?service=git-upload-pack", token, "version=2", nil)
-	read.Body.Close()
-	if read.StatusCode != 404 || f.creates.Load() != before {
-		t.Fatal("fetch created repository")
+}
+
+func TestCreateFirstPushAndConcurrency(t *testing.T) {
+	for _, suffix := range []string{".git", ""} {
+		t.Run("suffix="+suffix, func(t *testing.T) {
+			f := newFixture(t)
+			f.url = strings.TrimSuffix(f.url, ".git") + suffix
+			token := f.sign("github.com/org/scratch-*:c", "github.com/org/scratch-*#agents/a/*:rw")
+			url := f.proxy.URL + "/github/org/scratch-one" + suffix
+			out, e := gitRun(f.work, token, "push", url, "HEAD:refs/heads/agents/a/first")
+			if e != nil {
+				t.Fatal(e, out)
+			}
+			if f.creates.Load() != 1 || f.pushes.Load() != 1 {
+				t.Fatal(f.creates.Load(), f.pushes.Load())
+			}
+			var wg sync.WaitGroup
+			for i := 0; i < 8; i++ {
+				wg.Go(func() {
+					resp := f.request("GET", "/github/org/scratch-two"+suffix+"/info/refs?service=git-receive-pack", token, "", nil)
+					defer resp.Body.Close()
+					if resp.StatusCode != 200 {
+						b, _ := io.ReadAll(resp.Body)
+						t.Errorf("discovery %d %s", resp.StatusCode, b)
+					}
+				})
+			}
+			wg.Wait()
+			if f.created.Load() != 2 {
+				t.Fatal("duplicate creation", f.created.Load())
+			}
+			before := f.creates.Load()
+			read := f.request("GET", "/github/org/scratch-three"+suffix+"/info/refs?service=git-upload-pack", token, "version=2", nil)
+			read.Body.Close()
+			if read.StatusCode != 404 || f.creates.Load() != before {
+				t.Fatal("fetch created repository")
+			}
+
+		})
 	}
 }
+
 func TestDirectPushAndProtocolRejections(t *testing.T) {
 	f := newFixture(t)
 	zero := strings.Repeat("0", 40)
@@ -503,4 +524,72 @@ func (f *fixture) replica() *httptest.Server {
 	proxy := httptest.NewServer(s)
 	f.t.Cleanup(func() { proxy.Close(); s.Close() })
 	return proxy
+}
+
+// GV-005, GV-013 through GV-015: real discovery and new object transfer under one JWT.
+func TestOptionalGitRealFetchParity(t *testing.T) {
+	f := newFixture(t)
+	var visible string
+	clones := []string{}
+	for i, suffix := range []string{".git", ""} {
+		url := strings.TrimSuffix(f.url, ".git") + suffix
+		out, err := gitRun(f.root, f.token, "ls-remote", url)
+		if err != nil {
+			t.Fatal(err, out)
+		}
+		refs := strings.Fields(out)
+		sort.Strings(refs)
+		normalized := strings.Join(refs, " ")
+		if strings.Contains(out, "secret") || !strings.Contains(out, "refs/heads/main") {
+			t.Fatal(out)
+		}
+		if i == 0 {
+			visible = normalized
+		} else if visible != normalized {
+			t.Fatalf("different refs: %s / %s", visible, normalized)
+		}
+		clone := filepath.Join(f.root, fmt.Sprintf("fetch-clone-%d", i))
+		out, err = gitRun(f.root, f.token, "clone", "--branch", "main", url, clone)
+		if err != nil {
+			t.Fatal(err, out)
+		}
+		if got, want := git(t, clone, "rev-parse", "HEAD"), git(t, f.work, "rev-parse", "HEAD"); got != want {
+			t.Fatalf("clone commit %s != %s", got, want)
+		}
+		clones = append(clones, clone)
+	}
+	if err := os.WriteFile(filepath.Join(f.work, "new-object"), []byte("fetch transfer"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.work, "add", ".")
+	git(t, f.work, "commit", "-m", "new upstream object")
+	commit := git(t, f.work, "rev-parse", "HEAD")
+	git(t, f.work, "push", filepath.Join(f.root, "org/repo.git"), "main")
+	for _, clone := range clones {
+		if out, err := gitRun(clone, "", "cat-file", "-e", commit); err == nil {
+			t.Fatalf("object already present: %s", out)
+		}
+		out, err := gitRun(clone, f.token, "fetch", "origin", "refs/heads/main:refs/remotes/origin/main")
+		if err != nil {
+			t.Fatal(err, out)
+		}
+		if got := git(t, clone, "rev-parse", "refs/remotes/origin/main"); got != commit {
+			t.Fatalf("fetched %s, want %s", got, commit)
+		}
+		git(t, clone, "cat-file", "-e", commit+"^{commit}")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	posts := 0
+	for _, path := range f.gitPaths {
+		if path != "GET /org/repo.git/info/refs?service=git-upload-pack" && path != "POST /org/repo.git/git-upload-pack" {
+			t.Fatalf("noncanonical upstream target %s", path)
+		}
+		if strings.HasPrefix(path, "POST ") {
+			posts++
+		}
+	}
+	if posts < 4 {
+		t.Fatalf("missing real POST transfers: %d", posts)
+	}
 }

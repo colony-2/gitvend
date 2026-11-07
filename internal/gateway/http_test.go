@@ -62,7 +62,7 @@ func TestGzipAndLimits(t *testing.T) {
 }
 func TestCanonicalRoutesAndTLS(t *testing.T) {
 	f := newFixture(t)
-	for _, path := range []string{"/github/org%2frepo.git/info/refs?service=git-upload-pack", "/github/org/../repo.git/info/refs?service=git-upload-pack", "/github//org/repo.git/info/refs?service=git-upload-pack", "/github/org/repo/info/refs?service=git-upload-pack"} {
+	for _, path := range []string{"/github/org%2frepo.git/info/refs?service=git-upload-pack", "/github/org/../repo.git/info/refs?service=git-upload-pack", "/github//org/repo.git/info/refs?service=git-upload-pack"} {
 		req := httptest.NewRequest("GET", path, nil)
 		req.SetBasicAuth("git", f.token)
 		req.Header.Set("Git-Protocol", "version=2")

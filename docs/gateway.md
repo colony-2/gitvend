@@ -132,9 +132,11 @@ Expected response: `ok`. This is a liveness check; it does not verify a JWT or c
 The remote URL has this structure:
 
 ```text
-https://GATEWAY/PROVIDER_ALIAS/OWNER/REPOSITORY.git
+https://GATEWAY/PROVIDER_ALIAS/OWNER/REPOSITORY[.git]
 https://git-gateway.example:8443/github/fooorg/project.git
 ```
+
+The `.git` suffix is optional for discovery, fetch and push. Both URL forms use the same repository identity, credentials and permissions; `[.git]` above denotes optional text, not literal brackets.
 
 The `github` segment is the configured provider alias. Permission strings use the configured upstream authority (`github.com`), not that alias or the gateway hostname. Repository permission patterns omit the `.git` suffix. Add more provider entries for distinct GitHub-compatible endpoints or owner/credential mappings; overlapping host/owner routes are rejected. Other forge APIs require an adapter.
 
@@ -415,7 +417,7 @@ Start with `gitvend version`, `/healthz`, and `git ls-remote --heads` as shown a
 | `Git protocol v2 required` | Set `protocol.version=2`; ensure an ingress proxy preserves the `Git-Protocol` header. Pushes still use standard receive-pack. |
 | HTTP 403 / `push denied for ...` | Inspect the exact destination ref, matching `r` plus `w`/`d` grants, issuer/owner limits and gateway denies. The sample denies writes to main/master. |
 | No refs shown; clone cannot find main or remote HEAD | The requested branch may be absent or hidden. Use an explicitly permitted branch with `--branch`; new scratch repos may have only `agents/47/start`. |
-| HTTP 404 / unsupported route or missing repository | Use `/alias/owner/repo.git`, check allowed owners, and verify the upstream identity can see the repository. Only authorized push discovery can create a missing repo. |
+| HTTP 404 / unsupported route or missing repository | Use `/alias/owner/repo` or `/alias/owner/repo.git`, check allowed owners, and verify the upstream identity can see the repository. Only authorized push discovery can create a missing repo. |
 | Missing repo is not created | Check `allow_creation`, `c`, overlapping branch `rw`, owner limits and upstream organization permissions. Check the audit logs for an unconfirmed create attempt. |
 | HTTP 429 / gateway busy | The concurrent-request limit is reached. Wait for active requests to finish and retry. |
 | HTTP 409 / creation visibility violation | A creation attempt resolved to unexpected visibility. Investigate the upstream name/visibility; gitvend will not alter it automatically. |

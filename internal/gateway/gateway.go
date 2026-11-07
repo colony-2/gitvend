@@ -88,9 +88,6 @@ func (s *Server) route(r *http.Request) (route, error) {
 		return out, fmt.Errorf("unknown provider")
 	}
 	owner, name := parts[1], parts[2]
-	if !strings.HasSuffix(name, ".git") {
-		return out, fmt.Errorf("repository URL must end in .git")
-	}
 	name = strings.TrimSuffix(name, ".git")
 	if !config.ValidName(owner) || !config.ValidName(name) {
 		return out, fmt.Errorf("invalid repository path")
