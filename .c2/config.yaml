@@ -1,0 +1,18 @@
+jobdb: http://192.168.1.195:9047/c2
+self:
+  cell: gitvend
+  repo: https://github.com/colony-2/gitvend.git
+  ref: main
+root:
+  repo: https://github.com/colony-2/c2-root.git
+  ref: main
+packages:
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#go_1_25
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#stdenv.cc
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#gnumake
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#git
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#nodejs_24
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#gnutar
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#gzip
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#python313
+  - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#docker-client
